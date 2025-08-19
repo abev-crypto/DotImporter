@@ -173,9 +173,20 @@ def pixels_to_blender_xy(x, y, w, h, unit_per_px, origin_mode, flip_y):
     return X, Y
 
 
-def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_mode, flip_y, collection_name):
+def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_mode, flip_y, collection_name, max_points=0):
+    centers = np.asarray(centers_px, dtype=np.float32)
+    if max_points > 0:
+        if centers.shape[0] > max_points:
+            centers = centers[:max_points]
+        elif centers.shape[0] < max_points:
+            extra = max_points - centers.shape[0]
+            xs = np.linspace(0, img_w - 1, extra, dtype=np.float32)
+            ys = np.zeros(extra, dtype=np.float32)
+            extra_centers = np.stack([xs, ys], axis=1)
+            centers = np.vstack([centers, extra_centers])
+
     verts = []
-    for x, y in centers_px:
+    for x, y in centers:
         X, Y = pixels_to_blender_xy(x, y, img_w, img_h, unit_per_px, origin_mode, flip_y)
         verts.append((X, Y, 0.0))
 
@@ -247,6 +258,11 @@ class DPIProps(PropertyGroup):
         name="Object Name",
         default="DotPointsObj"
     )
+    max_points: IntProperty(
+        name="Max Points",
+        description="Maximum number of vertices to create (0 for unlimited). Missing points are placed along the top edge.",
+        default=0, min=0
+    )
     save_csv: BoolProperty(
         name="Save CSV",
         default=True,
@@ -288,7 +304,7 @@ class DPI_OT_detect_and_create(Operator):
         # Create points in Blender
         obj, n = create_vertices_object(
             p.object_name, centers, w, h,
-            p.unit_per_px, p.origin_mode, p.flip_y, p.collection_name
+            p.unit_per_px, p.origin_mode, p.flip_y, p.collection_name, p.max_points
         )
 
         msg = f"Detected {len(centers)} centers. Created {n} vertices."
@@ -327,6 +343,7 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "flip_y")
         box2.prop(p, "collection_name")
         box2.prop(p, "object_name")
+        box2.prop(p, "max_points")
 
         layout.prop(p, "save_csv")
         layout.operator(DPI_OT_detect_and_create.bl_idname, icon='PARTICLES')
