@@ -167,6 +167,8 @@ def save_centers_csv(csv_path: Path, centers, areas):
 # ---------- Utility: colors at centers & CSV ----------
 def sample_colors(rgb: np.ndarray, centers):
     H, W, _ = rgb.shape
+    if len(centers) == 0:
+        return np.empty((0, 3), dtype=np.uint8)
     cols = []
     for x, y in centers:
         xi = int(round(float(x)))
