@@ -18,10 +18,13 @@ import csv
 import numpy as np
 
 
-# ---------- Utility: image -> grayscale (numpy) ----------
+# ---------- Utility: image -> grayscale & RGB (numpy) ----------
 def load_image_grayscale_np(img_path: str):
     """
-    Returns: gray (H,W) in [0,1], width, height.
+    Returns:
+        gray : (H,W) in [0,1]
+        rgb  : (H,W,3) in [0,1]
+        width, height
     Note: Blender's image.pixels is bottom-to-top; we flip vertically
           so that (0,0) is top-left like typical image files.
     """
@@ -30,11 +33,13 @@ def load_image_grayscale_np(img_path: str):
     px = np.array(img.pixels[:], dtype=np.float32)  # RGBA flat
     bpy.data.images.remove(img)  # free
     rgba = px.reshape((h, w, 4))
+    rgb = rgba[..., :3]
     # Convert to grayscale with Rec.709 luma
-    gray = rgba[..., 0] * 0.2126 + rgba[..., 1] * 0.7152 + rgba[..., 2] * 0.0722
+    gray = rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
     # Blender pixels start at bottom row -> flip to top-left origin
     gray = np.flipud(gray)
-    return gray, w, h
+    rgb = np.flipud(rgb)
+    return gray, rgb, w, h
 
 
 # ---------- Utility: connected components (4-neighborhood) ----------
@@ -159,6 +164,46 @@ def save_centers_csv(csv_path: Path, centers, areas):
         for i, ((x, y), a) in enumerate(zip(centers, areas), start=1):
             writer.writerow([i, float(x), float(y), int(a)])
 
+# ---------- Utility: colors at centers & CSV ----------
+def sample_colors(rgb: np.ndarray, centers):
+    H, W, _ = rgb.shape
+    cols = []
+    for x, y in centers:
+        xi = int(round(float(x)))
+        yi = int(round(float(y)))
+        xi = min(max(xi, 0), W - 1)
+        yi = min(max(yi, 0), H - 1)
+        r, g, b = rgb[yi, xi]
+        cols.append((int(r * 255), int(g * 255), int(b * 255)))
+    return np.array(cols, dtype=np.uint8)
+
+def save_color_keys_csv(csv_path: Path, colors):
+    """Save sampled RGB colors to CSV in CSV_ColorKeys format."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        header = ["CSV_ColorKeys"]
+        for i in range(len(colors)):
+            header += [f"vc[{i}]_R", f"vc[{i}]_G", f"vc[{i}]_B"]
+        writer.writerow(header)
+        row = [0]
+        for r, g, b in colors:
+            row += [int(r), int(g), int(b)]
+        writer.writerow(row)
+
+
+def apply_color_keys_action(obj, colors, frame: int = 1):
+    """Create CSV_ColorKeys action and key vc[i]_* properties on the object."""
+    if not obj.animation_data:
+        obj.animation_data_create()
+    obj.animation_data.action = bpy.data.actions.new(name="CSV_ColorKeys")
+
+    for i, (r, g, b) in enumerate(colors):
+        for ch, val in zip(("R", "G", "B"), (r, g, b)):
+            key = f"vc[{i}]_{ch}"
+            obj[key] = int(val)
+            obj.keyframe_insert(f'["{key}"]', frame=frame)
+
 
 # ---------- Blender: place vertices ----------
 def pixels_to_blender_xy(x, y, w, h, unit_per_px, origin_mode, flip_y):
@@ -200,7 +245,7 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
         coll = bpy.data.collections.new(collection_name)
         bpy.context.scene.collection.children.link(coll)
     coll.objects.link(obj)
-    return obj, len(verts)
+    return obj, len(verts), centers
 
 
 # ---------- Properties ----------
@@ -283,33 +328,55 @@ class DPI_OT_detect_and_create(Operator):
             return {'CANCELLED'}
 
         try:
-            gray, w, h = load_image_grayscale_np(bpy.path.abspath(p.image_path))
+            gray, rgb, w, h = load_image_grayscale_np(bpy.path.abspath(p.image_path))
         except Exception as e:
             self.report({'ERROR'}, f"Failed to load image: {e}")
             return {'CANCELLED'}
 
         centers, areas = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
+        colors = sample_colors(rgb, centers)
+        detected_count = len(centers)
 
-        # Save CSV
-        csv_path = None
-        if p.save_csv:
-            img_path = Path(bpy.path.abspath(p.image_path))
-            out_dir = Path(bpy.path.abspath(p.output_dir)) if p.output_dir else img_path.parent
-            csv_path = out_dir / f"{img_path.stem}_centers.csv"
-            try:
-                save_centers_csv(csv_path, centers, areas)
-            except Exception as e:
-                self.report({'WARNING'}, f"CSV save failed: {e}")
-
-        # Create points in Blender
-        obj, n = create_vertices_object(
+        # Create points in Blender (may add extra vertices)
+        obj, n, final_centers = create_vertices_object(
             p.object_name, centers, w, h,
             p.unit_per_px, p.origin_mode, p.flip_y, p.collection_name, p.max_points
         )
 
-        msg = f"Detected {len(centers)} centers. Created {n} vertices."
+        final_len = len(final_centers)
+        if areas.shape[0] > final_len:
+            areas = areas[:final_len]
+        elif areas.shape[0] < final_len:
+            areas = np.concatenate([areas, np.zeros(final_len - areas.shape[0], dtype=np.int32)])
+
+        if colors.shape[0] > final_len:
+            colors = colors[:final_len]
+        elif colors.shape[0] < final_len:
+            extra = np.zeros((final_len - colors.shape[0], 3), dtype=np.uint8)
+            colors = np.vstack([colors, extra])
+
+        # Key colors on object for other addons
+        apply_color_keys_action(obj, colors)
+
+        # Save CSV files
+        csv_path = None
+        color_csv_path = None
+        if p.save_csv:
+            img_path = Path(bpy.path.abspath(p.image_path))
+            out_dir = Path(bpy.path.abspath(p.output_dir)) if p.output_dir else img_path.parent
+            csv_path = out_dir / f"{img_path.stem}_centers.csv"
+            color_csv_path = out_dir / f"{img_path.stem}_color_keys.csv"
+            try:
+                save_centers_csv(csv_path, final_centers, areas)
+                save_color_keys_csv(color_csv_path, colors)
+            except Exception as e:
+                self.report({'WARNING'}, f"CSV save failed: {e}")
+
+        msg = f"Detected {detected_count} centers. Created {n} vertices."
         if csv_path:
             msg += f" CSV: {csv_path}"
+        if color_csv_path:
+            msg += f" Color CSV: {color_csv_path}"
         self.report({'INFO'}, msg)
         return {'FINISHED'}
 
