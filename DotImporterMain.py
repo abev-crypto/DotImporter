@@ -1,8 +1,8 @@
 bl_info = {
     "name": "Dot Points Importer (CSV + Vertices)",
-    "author": "you",
-    "version": (1, 0, 0),
-    "blender": (4, 0, 0),
+    "author": "ABEYUYA",
+    "version": (1, 1, 0),
+    "blender": (4, 3, 0),
     "location": "View3D > N-panel > Dot Importer",
     "description": "Detect circular black dots from an image, export centers to CSV, and create vertices at those positions.",
     "category": "Import-Export",
