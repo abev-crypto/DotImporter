@@ -156,15 +156,22 @@ def detect_centers(gray: np.ndarray, threshold: float, invert: bool, min_area_px
     return centers, areas
 
 
-def save_centers_csv(csv_path: Path, centers, areas):
+def save_points_color_csv(csv_path: Path, centers_px, colors, img_w, img_h,
+                          unit_per_px, origin_mode, flip_y):
+    """Save detected points with RGB colors in a CSV format.
+
+    Columns: Time [msec], x [m], y [m], z [m], Red, Green, Blue.
+    """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["index", "x", "y", "area"])
-        for i, ((x, y), a) in enumerate(zip(centers, areas), start=1):
-            writer.writerow([i, float(x), float(y), int(a)])
+        writer.writerow(["Time [msec]", "x [m]", "y [m]", "z [m]", "Red", "Green", "Blue"])
+        for i, ((px, py), (r, g, b)) in enumerate(zip(centers_px, colors)):
+            X, Y = pixels_to_blender_xy(px, py, img_w, img_h,
+                                       unit_per_px, origin_mode, flip_y)
+            writer.writerow([i, float(X), float(Y), 0.0, int(r), int(g), int(b)])
 
-# ---------- Utility: colors at centers & CSV ----------
+# ---------- Utility: colors at centers ----------
 def sample_colors(rgb: np.ndarray, centers):
     H, W, _ = rgb.shape
     if len(centers) == 0:
@@ -178,21 +185,6 @@ def sample_colors(rgb: np.ndarray, centers):
         r, g, b = rgb[yi, xi]
         cols.append((int(r * 255), int(g * 255), int(b * 255)))
     return np.array(cols, dtype=np.uint8)
-
-def save_color_keys_csv(csv_path: Path, colors):
-    """Save sampled RGB colors to CSV in CSV_ColorKeys format."""
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        header = ["CSV_ColorKeys"]
-        for i in range(len(colors)):
-            header += [f"vc[{i}]_R", f"vc[{i}]_G", f"vc[{i}]_B"]
-        writer.writerow(header)
-        row = [0]
-        for r, g, b in colors:
-            row += [int(r), int(g), int(b)]
-        writer.writerow(row)
-
 
 def apply_color_keys_action(obj, colors, frame: int = 1):
     """Create CSV_ColorKeys action and key vc[i]_* properties on the object."""
@@ -313,7 +305,7 @@ class DPIProps(PropertyGroup):
     save_csv: BoolProperty(
         name="Save CSV",
         default=True,
-        description="Export detected centers to CSV",
+        description="Export detected points with color to CSV",
     )
 
 
@@ -335,7 +327,7 @@ class DPI_OT_detect_and_create(Operator):
             self.report({'ERROR'}, f"Failed to load image: {e}")
             return {'CANCELLED'}
 
-        centers, areas = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
+        centers, _ = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
         colors = sample_colors(rgb, centers)
         detected_count = len(centers)
 
@@ -346,11 +338,6 @@ class DPI_OT_detect_and_create(Operator):
         )
 
         final_len = len(final_centers)
-        if areas.shape[0] > final_len:
-            areas = areas[:final_len]
-        elif areas.shape[0] < final_len:
-            areas = np.concatenate([areas, np.zeros(final_len - areas.shape[0], dtype=np.int32)])
-
         if colors.shape[0] > final_len:
             colors = colors[:final_len]
         elif colors.shape[0] < final_len:
@@ -360,25 +347,21 @@ class DPI_OT_detect_and_create(Operator):
         # Key colors on object for other addons
         apply_color_keys_action(obj, colors)
 
-        # Save CSV files
+        # Save CSV file
         csv_path = None
-        color_csv_path = None
         if p.save_csv:
             img_path = Path(bpy.path.abspath(p.image_path))
             out_dir = Path(bpy.path.abspath(p.output_dir)) if p.output_dir else img_path.parent
-            csv_path = out_dir / f"{img_path.stem}_centers.csv"
-            color_csv_path = out_dir / f"{img_path.stem}_color_keys.csv"
+            csv_path = out_dir / f"{img_path.stem}_points.csv"
             try:
-                save_centers_csv(csv_path, final_centers, areas)
-                save_color_keys_csv(color_csv_path, colors)
+                save_points_color_csv(csv_path, final_centers, colors, w, h,
+                                      p.unit_per_px, p.origin_mode, p.flip_y)
             except Exception as e:
                 self.report({'WARNING'}, f"CSV save failed: {e}")
 
         msg = f"Detected {detected_count} centers. Created {n} vertices."
         if csv_path:
             msg += f" CSV: {csv_path}"
-        if color_csv_path:
-            msg += f" Color CSV: {color_csv_path}"
         self.report({'INFO'}, msg)
         return {'FINISHED'}
 
