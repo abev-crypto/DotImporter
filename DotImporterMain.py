@@ -403,11 +403,10 @@ class DPI_OT_detect_and_create(Operator):
         detected_count = len(centers)
 
         # Create points in Blender (may add extra vertices)
-        max_points_arg = 0 if p.conversion_mode != 'NONE' else p.max_points
         obj, n, final_centers = create_vertices_object(
             p.object_name, centers, w, h,
             p.unit_per_px, p.origin_mode, p.flip_y,
-            p.collection_name, max_points_arg, p.spacing
+            p.collection_name, p.max_points, p.spacing
         )
 
         final_len = len(final_centers)
