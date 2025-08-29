@@ -1,36 +1,53 @@
 """Convert silhouette images to sampled dots along their outlines."""
 
 import numpy as np
-import matplotlib.pyplot as plt
 from PIL import Image, ImageFilter
-from skimage.morphology import skeletonize, binary_erosion, disk
-import pandas as pd
+from skimage.morphology import binary_erosion, disk, skeletonize
 
-from .utils import sample_poly, global_thin, edge_paths
+from .utils import edge_paths, global_thin, sample_poly
 
 
-def main():
-    # --- 1) Load silhouette image ---
-    img_path = '/mnt/data/person_46477-300x300-905360519.jpg'
-    img = Image.open(img_path).convert('L')
+def shape_image_to_dots(
+    image_path: str, spacing: float, junction_ratio: float = 0.35
+) -> np.ndarray:
+    """Sample points along the outline of a silhouette image.
 
-    # Binarize (silhouette = foreground True). Invert if needed based on mean.
+    Parameters
+    ----------
+    image_path:
+        Path to the silhouette image. The silhouette should be dark on a
+        light background.
+    spacing:
+        Desired spacing between consecutive points in pixels.
+    junction_ratio:
+        Fraction of ``spacing`` used as margin around junctions.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``(N, 2)`` containing ``(x, y)`` coordinates of the
+        sampled outline points. ``N`` may be zero if no outline is detected.
+    """
+
+    img = Image.open(image_path).convert("L")
+
+    # Binarize (silhouette = foreground True)
     arr = np.array(img)
     foreground = arr < 128  # silhouette is black on white
 
-    # --- 2) Outline extraction (morphological gradient) ---
+    # Outline extraction (morphological gradient)
     outline = foreground ^ binary_erosion(foreground, footprint=disk(1))
 
-    # Optional: slight blur before skeleton to avoid broken border on jaggy edges
+    # Optional blur to stabilize jagged edges before skeletonization
     outline_img = Image.fromarray((outline * 255).astype(np.uint8)).filter(
         ImageFilter.GaussianBlur(radius=0.0)
     )
     outline = np.array(outline_img) > 0
 
-    # --- 3) Thin to 1px outline ---
+    # Skeletonize to obtain a 1px outline
     skel = skeletonize(outline)
 
-    # --- 4) Build graph (8-neighborhood) ---
+    # Build adjacency graph of skeleton pixels
     H, W = skel.shape
     coords = np.argwhere(skel)
     idx_map = -np.ones((H, W), dtype=np.int32)
@@ -59,34 +76,48 @@ def main():
 
     polys = edge_paths(coords, adj, deg)
 
-    # --- 6) Per-path sampling with junction margin & global thinning ---
-    spacing = 15.0  # px spacing for this test
-    junction_margin = spacing * 0.35
-
+    # Per-path sampling with junction margin & global thinning
+    junction_margin = spacing * junction_ratio
     pts_all = []
     for poly in polys:
-        pts = sample_poly(poly, spacing, start_offset=spacing * 0.5, end_margin=junction_margin)
+        pts = sample_poly(
+            poly, spacing, start_offset=spacing * 0.5, end_margin=junction_margin
+        )
         if len(pts):
             pts_all.append(pts)
     pts = np.vstack(pts_all) if pts_all else np.zeros((0, 2))
     pts_clean = global_thin(pts, min_dist=spacing * 0.95)
+    return pts_clean
 
-    # --- 7) Save results ---
-    csv_path = '/mnt/data/silhouette_outline_points.csv'
-    pd.DataFrame(pts_clean, columns=['x', 'y']).to_csv(csv_path, index=False)
 
-    # Compose a visualization: original + detected outline overlay
+def main() -> None:
+    """Example usage for manual testing."""
+
+    img_path = "/mnt/data/person_46477-300x300-905360519.jpg"
+    spacing = 15.0
+    pts = shape_image_to_dots(img_path, spacing)
+
+    # Optional preview and CSV export for manual verification
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    pd.DataFrame(pts, columns=["x", "y"]).to_csv(
+        "/mnt/data/silhouette_outline_points.csv", index=False
+    )
+
+    img = Image.open(img_path).convert("L")
     plt.figure(figsize=(5, 5))
-    plt.imshow(np.array(img), cmap='gray')
-    plt.contour(outline, levels=[0.5], linewidths=1, linestyles='--')
-    if len(pts_clean):
-        plt.scatter(pts_clean[:, 0], pts_clean[:, 1], s=10)
-    plt.axis('off')
+    plt.imshow(np.array(img), cmap="gray")
+    if len(pts):
+        plt.scatter(pts[:, 0], pts[:, 1], s=10)
+    plt.axis("off")
     plt.tight_layout()
-    png_path = '/mnt/data/silhouette_outline_points_preview.png'
-    plt.savefig(png_path, dpi=200, bbox_inches='tight')
-    print(png_path, csv_path)
+    plt.savefig(
+        "/mnt/data/silhouette_outline_points_preview.png",
+        dpi=200,
+        bbox_inches="tight",
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
