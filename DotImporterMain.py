@@ -225,7 +225,7 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
             step = max(spacing, 1.0)
             xs = []
             ys = []
-            x, y = 0.0, 0.0
+            x, y = 0.0, float(img_h)
             for _ in range(extra):
                 xs.append(x)
                 ys.append(y)
@@ -345,7 +345,7 @@ class DPIProps(PropertyGroup):
     )
     max_points: IntProperty(
         name="Max Points",
-        description="Maximum number of vertices to create (0 for unlimited). Missing points are placed from the top-left with uniform spacing.",
+        description="Maximum number of vertices to create (0 for unlimited). Missing points are placed outside the image bounds with uniform spacing.",
         default=0, min=0
     )
     save_csv: BoolProperty(
