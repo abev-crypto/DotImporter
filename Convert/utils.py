@@ -25,7 +25,7 @@ def check_skimage() -> tuple[bool, str]:
     return False, "scikit-image が見つかりません。`pip install scikit-image` を実行してください。"
 
 
-def load_skeleton(image_path, blur_radius=0.5, thresh_scale=0.8):
+def load_skeleton(image_path, blur_radius=0.5, thresh_scale=0.8, resize_to=0):
     """Load an image and return its skeleton and adjacency graph.
 
     Parameters
@@ -36,19 +36,29 @@ def load_skeleton(image_path, blur_radius=0.5, thresh_scale=0.8):
         Gaussian blur radius applied before thresholding.
     thresh_scale : float, optional
         Multiplier for the mean intensity to determine the threshold.
+    resize_to : int, optional
+        If greater than ``0``, resize the image so that the longer side
+        equals this value while preserving the aspect ratio. Points will be
+        scaled back to the original size using the returned ``scale`` factor.
 
     Returns
     -------
     img : PIL.Image.Image
-        Original grayscale image.
+        Resized grayscale image.
     coords : ndarray of shape (N, 2)
-        Coordinates of skeleton pixels as (row, col).
+        Coordinates of skeleton pixels as ``(row, col)``.
     adj : list[list[int]]
         Adjacency list of the skeleton graph.
     deg : ndarray
         Degree of each node in the graph.
+    scale : float
+        Multiplicative factor to convert coordinates back to the original
+        image scale.
     """
     img = Image.open(image_path).convert("L")
+    orig_w, orig_h = img.size
+    if resize_to and (orig_w > resize_to or orig_h > resize_to):
+        img.thumbnail((resize_to, resize_to), Image.Resampling.LANCZOS)
     arr = np.array(img.filter(ImageFilter.GaussianBlur(radius=blur_radius)))
     H, W = arr.shape
     th = arr.mean() * thresh_scale
@@ -76,7 +86,8 @@ def load_skeleton(image_path, blur_radius=0.5, thresh_scale=0.8):
                 if j >= 0:
                     adj[i].append(j)
     deg = np.array([len(a) for a in adj])
-    return img, coords, adj, deg
+    scale = orig_w / img.size[0] if img.size[0] else 1.0
+    return img, coords, adj, deg, scale
 
 
 def edge_paths(coords, adj, deg):

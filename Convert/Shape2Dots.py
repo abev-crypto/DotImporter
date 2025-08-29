@@ -8,7 +8,12 @@ from .utils import edge_paths, global_thin, sample_poly
 
 
 def shape_image_to_dots(
-    image_path: str, spacing: float, junction_ratio: float = 0.35
+    image_path: str,
+    spacing: float,
+    junction_ratio: float = 0.35,
+    *,
+    max_points: int = 0,
+    resize_to: int = 0,
 ) -> np.ndarray:
     """Sample points along the outline of a silhouette image.
 
@@ -21,6 +26,12 @@ def shape_image_to_dots(
         Desired spacing between consecutive points in pixels.
     junction_ratio:
         Fraction of ``spacing`` used as margin around junctions.
+    max_points:
+        If greater than ``0``, adapt the spacing so that the number of
+        sampled points does not exceed this value.
+    resize_to:
+        Resize the image so that its longer side equals this value (keeping
+        aspect ratio) before processing. ``0`` disables resizing.
 
     Returns
     -------
@@ -30,6 +41,10 @@ def shape_image_to_dots(
     """
 
     img = Image.open(image_path).convert("L")
+    orig_w, orig_h = img.size
+    if resize_to and (orig_w > resize_to or orig_h > resize_to):
+        img.thumbnail((resize_to, resize_to), Image.Resampling.LANCZOS)
+    scale = orig_w / img.size[0] if img.size[0] else 1.0
 
     # Binarize (silhouette = foreground True)
     arr = np.array(img)
@@ -76,17 +91,25 @@ def shape_image_to_dots(
 
     polys = edge_paths(coords, adj, deg)
 
-    # Per-path sampling with junction margin & global thinning
-    junction_margin = spacing * junction_ratio
-    pts_all = []
-    for poly in polys:
-        pts = sample_poly(
-            poly, spacing, start_offset=spacing * 0.5, end_margin=junction_margin
-        )
-        if len(pts):
-            pts_all.append(pts)
-    pts = np.vstack(pts_all) if pts_all else np.zeros((0, 2))
-    pts_clean = global_thin(pts, min_dist=spacing * 0.95)
+    def _sample(sp: float) -> np.ndarray:
+        junction_margin = sp * junction_ratio
+        pts_all = []
+        for poly in polys:
+            pts = sample_poly(
+                poly, sp, start_offset=sp * 0.5, end_margin=junction_margin
+            )
+            if len(pts):
+                pts_all.append(pts)
+        pts = np.vstack(pts_all) if pts_all else np.zeros((0, 2))
+        return global_thin(pts, min_dist=sp * 0.95)
+
+    eff_spacing = spacing / scale
+    pts_clean = _sample(eff_spacing)
+    if max_points > 0 and len(pts_clean) > max_points:
+        while len(pts_clean) > max_points:
+            eff_spacing *= len(pts_clean) / max_points
+            pts_clean = _sample(eff_spacing)
+    pts_clean *= scale
     return pts_clean
 
 

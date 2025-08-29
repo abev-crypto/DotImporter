@@ -11,6 +11,9 @@ def line_image_to_dots(
     blur_radius: float = 0.5,
     thresh_scale: float = 0.8,
     junction_ratio: float = 0.35,
+    *,
+    max_points: int = 0,
+    resize_to: int = 0,
 ) -> np.ndarray:
     """Sample points from a line drawing.
 
@@ -26,6 +29,12 @@ def line_image_to_dots(
         Multiplier for the mean intensity to determine the threshold.
     junction_ratio:
         Fraction of ``spacing`` used as margin around junctions.
+    max_points:
+        If greater than ``0``, increase the spacing so that the number of
+        generated points does not exceed this value.
+    resize_to:
+        Resize the image so that its longer side equals this value (keeping
+        aspect ratio) before processing. ``0`` disables resizing.
 
     Returns
     -------
@@ -35,24 +44,33 @@ def line_image_to_dots(
     """
 
     # Load the skeleton graph from the input image
-    img, coords, adj, deg = load_skeleton(
-        image_path, blur_radius=blur_radius, thresh_scale=thresh_scale
+    img, coords, adj, deg, scale = load_skeleton(
+        image_path,
+        blur_radius=blur_radius,
+        thresh_scale=thresh_scale,
+        resize_to=resize_to,
     )
     polys = edge_paths(coords, adj, deg)
 
-    # Sample points along each polyline and merge
-    junction_margin = spacing * junction_ratio
-    pts_all = []
-    for poly in polys:
-        pts = sample_poly(
-            poly, spacing, start_offset=spacing * 0.5, end_margin=junction_margin
-        )
-        if len(pts):
-            pts_all.append(pts)
-    pts = np.vstack(pts_all) if pts_all else np.zeros((0, 2))
+    def _sample(sp: float) -> np.ndarray:
+        junction_margin = sp * junction_ratio
+        pts_all = []
+        for poly in polys:
+            pts = sample_poly(
+                poly, sp, start_offset=sp * 0.5, end_margin=junction_margin
+            )
+            if len(pts):
+                pts_all.append(pts)
+        pts = np.vstack(pts_all) if pts_all else np.zeros((0, 2))
+        return global_thin(pts, min_dist=sp * 0.95)
 
-    # Globally thin to remove near-duplicate points
-    pts_clean = global_thin(pts, min_dist=spacing * 0.95)
+    eff_spacing = spacing / scale
+    pts_clean = _sample(eff_spacing)
+    if max_points > 0 and len(pts_clean) > max_points:
+        while len(pts_clean) > max_points:
+            eff_spacing *= len(pts_clean) / max_points
+            pts_clean = _sample(eff_spacing)
+    pts_clean *= scale
     return pts_clean
 
 
