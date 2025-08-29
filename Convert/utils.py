@@ -180,3 +180,33 @@ def global_thin(points, min_dist):
             kept.append(p)
             tree = cKDTree(np.array(kept))
     return np.array(kept)
+
+
+def sample_polys(polys, spacing, junction_ratio):
+    """Sample and globally thin points from multiple polylines.
+
+    Parameters
+    ----------
+    polys : list[ndarray]
+        Polylines to sample from.
+    spacing : float
+        Desired spacing between samples.
+    junction_ratio : float
+        Fraction of ``spacing`` used as margin around junctions.
+
+    Returns
+    -------
+    ndarray
+        Sampled and thinned points of shape ``(N, 2)``.
+    """
+
+    junction_margin = spacing * junction_ratio
+    pts_all = []
+    for poly in polys:
+        pts = sample_poly(
+            poly, spacing, start_offset=spacing * 0.5, end_margin=junction_margin
+        )
+        if len(pts):
+            pts_all.append(pts)
+    pts = np.vstack(pts_all) if pts_all else np.zeros((0, 2))
+    return global_thin(pts, min_dist=spacing * 0.95)
