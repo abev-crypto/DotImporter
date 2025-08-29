@@ -215,16 +215,25 @@ def pixels_to_blender_xy(x, y, w, h, unit_per_px, origin_mode, flip_y):
     return X, Y
 
 
-def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_mode, flip_y, collection_name, max_points=0):
+def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_mode, flip_y, collection_name, max_points=0, spacing=10.0):
     centers = np.asarray(centers_px, dtype=np.float32)
     if max_points > 0:
         if centers.shape[0] > max_points:
             centers = centers[:max_points]
         elif centers.shape[0] < max_points:
             extra = max_points - centers.shape[0]
-            xs = np.linspace(0, img_w - 1, extra, dtype=np.float32)
-            ys = np.zeros(extra, dtype=np.float32)
-            extra_centers = np.stack([xs, ys], axis=1)
+            step = max(spacing, 1.0)
+            xs = []
+            ys = []
+            x, y = 0.0, 0.0
+            for _ in range(extra):
+                xs.append(x)
+                ys.append(y)
+                x += step
+                if x >= img_w:
+                    x = 0.0
+                    y += step
+            extra_centers = np.stack([np.array(xs, dtype=np.float32), np.array(ys, dtype=np.float32)], axis=1)
             centers = np.vstack([centers, extra_centers])
 
     verts = []
@@ -275,8 +284,9 @@ class DPIProps(PropertyGroup):
     )
     conversion_mode: EnumProperty(
         name="Conversion Mode",
-        items=[('LINE', 'Line', ''), ('SHAPE', 'Shape', '')],
+        items=[('NONE', 'None', ''), ('LINE', 'Line', ''), ('SHAPE', 'Shape', '')],
         description="Select conversion type for non-circular features",
+        default='NONE'
     )
     spacing: FloatProperty(
         name="Spacing",
@@ -327,7 +337,7 @@ class DPIProps(PropertyGroup):
     )
     max_points: IntProperty(
         name="Max Points",
-        description="Maximum number of vertices to create (0 for unlimited). Missing points are placed along the top edge.",
+        description="Maximum number of vertices to create (0 for unlimited). Missing points are placed from the top-left with uniform spacing.",
         default=0, min=0
     )
     save_csv: BoolProperty(
@@ -383,7 +393,8 @@ class DPI_OT_detect_and_create(Operator):
         # Create points in Blender (may add extra vertices)
         obj, n, final_centers = create_vertices_object(
             p.object_name, centers, w, h,
-            p.unit_per_px, p.origin_mode, p.flip_y, p.collection_name, p.max_points
+            p.unit_per_px, p.origin_mode, p.flip_y,
+            p.collection_name, p.max_points, p.spacing
         )
 
         final_len = len(final_centers)
