@@ -264,7 +264,7 @@ class DPIProps(PropertyGroup):
     output_dir: StringProperty(
         name="Output Dir",
         subtype='DIR_PATH',
-        description="Where CSV will be saved (default: same folder as image)",
+        description="Where CSV will be saved (default: same folder as .blend)",
         default=""
     )
     threshold: FloatProperty(
@@ -411,7 +411,10 @@ class DPI_OT_detect_and_create(Operator):
         csv_path = None
         if p.save_csv:
             img_path = Path(bpy.path.abspath(p.image_path))
-            out_dir = Path(bpy.path.abspath(p.output_dir)) if p.output_dir else img_path.parent
+            if p.output_dir:
+                out_dir = Path(bpy.path.abspath(p.output_dir))
+            else:
+                out_dir = Path(bpy.path.abspath("//"))
             csv_path = out_dir / f"{img_path.stem}_points.csv"
             try:
                 save_points_color_csv(csv_path, final_centers, colors, w, h,
