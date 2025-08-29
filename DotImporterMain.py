@@ -17,6 +17,7 @@ from pathlib import Path
 import csv
 import numpy as np
 
+from Convert import Line2Dots, Shape2Dots
 from Convert.utils import check_skimage
 
 
@@ -272,6 +273,31 @@ class DPIProps(PropertyGroup):
         description="Ignore components smaller than this (in pixels)",
         default=20, min=1, soft_max=2000
     )
+    conversion_mode: EnumProperty(
+        name="Conversion Mode",
+        items=[('LINE', 'Line', ''), ('SHAPE', 'Shape', '')],
+        description="Select conversion type for non-circular features",
+    )
+    spacing: FloatProperty(
+        name="Spacing",
+        description="Spacing between sampled points (pixels)",
+        default=10.0, min=0.0,
+    )
+    blur_radius: FloatProperty(
+        name="Blur Radius",
+        description="Gaussian blur radius for line conversion",
+        default=0.5, min=0.0,
+    )
+    thresh_scale: FloatProperty(
+        name="Thresh Scale",
+        description="Threshold scale for line conversion",
+        default=0.8, min=0.0,
+    )
+    junction_ratio: FloatProperty(
+        name="Junction Ratio",
+        description="Margin ratio around junctions",
+        default=0.35, min=0.0,
+    )
     unit_per_px: FloatProperty(
         name="Unit per Pixel",
         description="Scale factor from pixel to Blender unit",
@@ -323,18 +349,34 @@ class DPI_OT_detect_and_create(Operator):
             self.report({'ERROR'}, "Image not set")
             return {'CANCELLED'}
 
+        img_path = bpy.path.abspath(p.image_path)
         ok, msg = check_skimage()
         if not ok:
             self.report({'ERROR'}, msg or "scikit-image が見つかりません")
             return {'CANCELLED'}
-
         try:
-            gray, rgb, w, h = load_image_grayscale_np(bpy.path.abspath(p.image_path))
+            gray, rgb, w, h = load_image_grayscale_np(img_path)
         except Exception as e:
             self.report({'ERROR'}, f"Failed to load image: {e}")
             return {'CANCELLED'}
 
-        centers, _ = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
+        if p.conversion_mode == 'LINE':
+            centers = Line2Dots.line_image_to_dots(
+                img_path,
+                p.spacing,
+                blur_radius=p.blur_radius,
+                thresh_scale=p.thresh_scale,
+                junction_ratio=p.junction_ratio,
+            )
+        elif p.conversion_mode == 'SHAPE':
+            centers = Shape2Dots.shape_image_to_dots(
+                img_path,
+                p.spacing,
+                junction_ratio=p.junction_ratio,
+            )
+        else:
+            centers, _ = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
+
         colors = sample_colors(rgb, centers)
         detected_count = len(centers)
 
@@ -391,9 +433,14 @@ class DPI_PT_panel(Panel):
 
         box = layout.box()
         box.label(text="Detection")
+        box.prop(p, "conversion_mode")
         box.prop(p, "threshold")
         box.prop(p, "invert")
         box.prop(p, "min_area_px")
+        box.prop(p, "spacing")
+        box.prop(p, "blur_radius")
+        box.prop(p, "thresh_scale")
+        box.prop(p, "junction_ratio")
 
         box2 = layout.box()
         box2.label(text="Placement")
