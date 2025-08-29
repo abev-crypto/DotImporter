@@ -18,6 +18,7 @@ import csv
 import numpy as np
 
 from Convert import Line2Dots, Shape2Dots
+from Convert.utils import check_skimage
 
 
 # ---------- Utility: image -> grayscale & RGB (numpy) ----------
@@ -349,6 +350,10 @@ class DPI_OT_detect_and_create(Operator):
             return {'CANCELLED'}
 
         img_path = bpy.path.abspath(p.image_path)
+        ok, msg = check_skimage()
+        if not ok:
+            self.report({'ERROR'}, msg or "scikit-image が見つかりません")
+            return {'CANCELLED'}
         try:
             gray, rgb, w, h = load_image_grayscale_np(img_path)
         except Exception as e:
