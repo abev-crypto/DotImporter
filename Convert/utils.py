@@ -1,7 +1,28 @@
 import numpy as np
 from PIL import Image, ImageFilter
-from skimage.morphology import skeletonize
 from scipy.spatial import cKDTree
+
+try:
+    from skimage.morphology import skeletonize  # type: ignore
+    _SKIMAGE_AVAILABLE = True
+except ImportError:  # pragma: no cover - handled gracefully
+    skeletonize = None
+    _SKIMAGE_AVAILABLE = False
+
+
+def check_skimage() -> tuple[bool, str]:
+    """Return availability of :mod:`scikit-image`.
+
+    Returns
+    -------
+    (bool, str)
+        ``True`` and empty message if scikit-image is available. ``False`` and a
+        guidance string otherwise.
+    """
+
+    if _SKIMAGE_AVAILABLE:
+        return True, ""
+    return False, "scikit-image が見つかりません。`pip install scikit-image` を実行してください。"
 
 
 def load_skeleton(image_path, blur_radius=0.5, thresh_scale=0.8):

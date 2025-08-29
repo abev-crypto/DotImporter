@@ -17,6 +17,8 @@ from pathlib import Path
 import csv
 import numpy as np
 
+from Convert.utils import check_skimage
+
 
 # ---------- Utility: image -> grayscale & RGB (numpy) ----------
 def load_image_grayscale_np(img_path: str):
@@ -319,6 +321,11 @@ class DPI_OT_detect_and_create(Operator):
         p = context.scene.dpi_props
         if not p.image_path:
             self.report({'ERROR'}, "Image not set")
+            return {'CANCELLED'}
+
+        ok, msg = check_skimage()
+        if not ok:
+            self.report({'ERROR'}, msg or "scikit-image が見つかりません")
             return {'CANCELLED'}
 
         try:
