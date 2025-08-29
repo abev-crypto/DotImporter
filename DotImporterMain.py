@@ -293,6 +293,14 @@ class DPIProps(PropertyGroup):
         description="Spacing between sampled points (pixels)",
         default=10.0, min=0.0,
     )
+    resize_to: IntProperty(
+        name="Resize Max",
+        description=(
+            "Resize image so the longer side equals this value before processing "
+            "(0 disables resizing)"
+        ),
+        default=0, min=0,
+    )
     blur_radius: FloatProperty(
         name="Blur Radius",
         description="Gaussian blur radius for line conversion",
@@ -377,12 +385,16 @@ class DPI_OT_detect_and_create(Operator):
                 blur_radius=p.blur_radius,
                 thresh_scale=p.thresh_scale,
                 junction_ratio=p.junction_ratio,
+                max_points=p.max_points,
+                resize_to=p.resize_to,
             )
         elif p.conversion_mode == 'SHAPE':
             centers = Shape2Dots.shape_image_to_dots(
                 img_path,
                 p.spacing,
                 junction_ratio=p.junction_ratio,
+                max_points=p.max_points,
+                resize_to=p.resize_to,
             )
         else:
             centers, _ = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
@@ -391,10 +403,11 @@ class DPI_OT_detect_and_create(Operator):
         detected_count = len(centers)
 
         # Create points in Blender (may add extra vertices)
+        max_points_arg = 0 if p.conversion_mode != 'NONE' else p.max_points
         obj, n, final_centers = create_vertices_object(
             p.object_name, centers, w, h,
             p.unit_per_px, p.origin_mode, p.flip_y,
-            p.collection_name, p.max_points, p.spacing
+            p.collection_name, max_points_arg, p.spacing
         )
 
         final_len = len(final_centers)
@@ -452,6 +465,7 @@ class DPI_PT_panel(Panel):
         box.prop(p, "invert")
         box.prop(p, "min_area_px")
         box.prop(p, "spacing")
+        box.prop(p, "resize_to")
         box.prop(p, "blur_radius")
         box.prop(p, "thresh_scale")
         box.prop(p, "junction_ratio")
