@@ -6,11 +6,9 @@ DotImporter は画像中の黒い円形ドットを検出し、その中心座�
 ## 必要なモジュール
 このアドオンを実行するには以下の Python モジュールが必要です。
 
-- matplotlib
-- pandas
-- pillow
-- numpy
-- scipy
+ - pillow
+ - numpy
+ - scipy
 
 これらは `pip install <module>` でインストールしてください。画像処理の一部では scikit-image を利用するため、必要に応じて `scikit-image` もインストールしてください。
 
