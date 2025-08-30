@@ -9,6 +9,7 @@ bl_info = {
 }
 
 import bpy
+import bmesh
 from bpy.types import Operator, Panel, PropertyGroup
 from bpy.props import (
     StringProperty, BoolProperty, FloatProperty, IntProperty, EnumProperty
@@ -16,9 +17,11 @@ from bpy.props import (
 from pathlib import Path
 import csv
 import numpy as np
+from PIL import Image, ImageDraw
 
 from Convert import Line2Dots, Shape2Dots, Mixed2Dots
-from Convert.utils import check_skimage
+from Convert.utils import check_skimage, sample_edge
+from Convert.Shape2Dots import fill_shape
 
 
 # ---------- Utility: image -> grayscale & RGB (numpy) ----------
@@ -269,6 +272,21 @@ def create_mesh_with_faces(points, width, height):
     mesh.from_pydata(points, [], faces)
     mesh.update()
     obj = bpy.data.objects.new("HeightMesh", mesh)
+    return obj
+
+
+def create_points_object(name, points, collection_name):
+    """Create a new mesh object consisting only of ``points``."""
+    mesh = bpy.data.meshes.new(name + "_Mesh")
+    mesh.from_pydata([tuple(p) for p in points], [], [])
+    mesh.update()
+
+    obj = bpy.data.objects.new(name, mesh)
+    coll = bpy.data.collections.get(collection_name)
+    if not coll:
+        coll = bpy.data.collections.new(collection_name)
+        bpy.context.scene.collection.children.link(coll)
+    coll.objects.link(obj)
     return obj
 
 
@@ -534,6 +552,88 @@ class DPI_OT_detect_and_create(Operator):
         return {'FINISHED'}
 
 
+class DPI_OT_mesh_to_dots(Operator):
+    bl_idname = "dpi.mesh_to_dots"
+    bl_label = "Mesh to Dots"
+    bl_description = "Sample mesh edges and faces to generate dots"
+
+    def execute(self, context):
+        p = context.scene.dpi_props
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Active mesh object required")
+            return {'CANCELLED'}
+
+        spacing = p.spacing if p.spacing > 0 else 1.0
+
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        edges = list(bm.edges)
+        faces = list(bm.faces)
+        mw = obj.matrix_world
+
+        points = []
+        for e in edges:
+            v0 = np.array(mw @ e.verts[0].co)
+            v1 = np.array(mw @ e.verts[1].co)
+            pts = sample_edge(v0, v1, spacing)
+            if len(pts):
+                points.extend(pts)
+
+        for f in faces:
+            verts = [np.array(mw @ v.co) for v in f.verts]
+            origin = verts[0]
+            normal = np.array(mw.to_3x3() @ f.normal)
+            nlen = np.linalg.norm(normal)
+            if nlen == 0:
+                continue
+            normal /= nlen
+            tangent = verts[1] - origin
+            tlen = np.linalg.norm(tangent)
+            if tlen == 0:
+                continue
+            tangent /= tlen
+            bitangent = np.cross(normal, tangent)
+            blen = np.linalg.norm(bitangent)
+            if blen == 0:
+                continue
+            bitangent /= blen
+
+            coords2d = []
+            for v in verts:
+                p3 = v - origin
+                u = np.dot(p3, tangent)
+                v2 = np.dot(p3, bitangent)
+                coords2d.append((u, v2))
+            coords2d = np.array(coords2d)
+            min_uv = coords2d.min(axis=0)
+            coords_shift = coords2d - min_uv
+            max_uv = coords_shift.max(axis=0)
+            W = max(1, int(np.ceil(max_uv[0] / spacing)) + 1)
+            H = max(1, int(np.ceil(max_uv[1] / spacing)) + 1)
+            img = Image.new('1', (W, H), 0)
+            draw = ImageDraw.Draw(img)
+            poly_px = [((u) / spacing, (v) / spacing) for u, v in coords_shift]
+            draw.polygon(poly_px, fill=1)
+            mask = np.array(img, dtype=bool)
+            interior = fill_shape(mask, spacing=1.0, mode=p.fill_mode)
+            for x, y in interior:
+                u = x * spacing + min_uv[0]
+                v2 = y * spacing + min_uv[1]
+                world_pt = origin + tangent * u + bitangent * v2
+                points.append(world_pt)
+
+        bm.free()
+        if not points:
+            self.report({'WARNING'}, "No points generated")
+            return {'CANCELLED'}
+
+        pts = np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
+        create_points_object(p.object_name or "MeshDots", pts, p.collection_name)
+        self.report({'INFO'}, f"Created {len(pts)} vertices from mesh")
+        return {'FINISHED'}
+
+
 # ---------- UI Panel ----------
 class DPI_PT_panel(Panel):
     bl_label = "Dot Importer"
@@ -586,11 +686,29 @@ class DPI_PT_panel(Panel):
         layout.operator(DPI_OT_detect_and_create.bl_idname, icon='PARTICLES')
 
 
+class DPI_PT_mesh_panel(Panel):
+    bl_label = "Mesh to Dots"
+    bl_idname = "DPI_PT_mesh_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Dot Importer"
+
+    def draw(self, context):
+        layout = self.layout
+        p = context.scene.dpi_props
+        box = layout.box()
+        box.prop(p, "spacing")
+        box.prop(p, "fill_mode")
+        box.operator(DPI_OT_mesh_to_dots.bl_idname, icon='MESH_DATA')
+
+
 # ---------- Register ----------
 classes = (
     DPIProps,
     DPI_OT_detect_and_create,
+    DPI_OT_mesh_to_dots,
     DPI_PT_panel,
+    DPI_PT_mesh_panel,
 )
 
 def register():
