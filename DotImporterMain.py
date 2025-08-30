@@ -305,6 +305,11 @@ class DPIProps(PropertyGroup):
         ],
         default='NONE',
     )
+    detect_color_boundary: BoolProperty(
+        name="Detect Color Boundary",
+        description="Include boundaries between color regions for shape conversion",
+        default=False,
+    )
     resize_to: IntProperty(
         name="Resize Max",
         description=(
@@ -408,6 +413,7 @@ class DPI_OT_detect_and_create(Operator):
                 fill_mode=p.fill_mode,
                 max_points=p.max_points,
                 resize_to=p.resize_to,
+                detect_color_boundary=p.detect_color_boundary,
             )
         else:
             centers, _ = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
@@ -478,6 +484,7 @@ class DPI_PT_panel(Panel):
         box.prop(p, "min_area_px")
         box.prop(p, "spacing")
         box.prop(p, "fill_mode")
+        box.prop(p, "detect_color_boundary")
         box.prop(p, "resize_to")
         box.prop(p, "blur_radius")
         box.prop(p, "thresh_scale")

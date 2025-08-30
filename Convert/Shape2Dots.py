@@ -4,6 +4,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 from skimage.morphology import binary_erosion, disk, skeletonize
 
+from .ColorBoundaries import color_boundaries_to_dots
 from .utils import graph_to_dots
 
 
@@ -142,6 +143,7 @@ def shape_image_to_dots(
     fill_mode: str = 'NONE',
     max_points: int = 0,
     resize_to: int = 0,
+    detect_color_boundary: bool = False,
 ) -> np.ndarray:
     """Sample points from a silhouette image.
 
@@ -162,6 +164,8 @@ def shape_image_to_dots(
     resize_to:
         Resize the image so that its longer side equals this value (keeping
         aspect ratio) before processing. ``0`` disables resizing.
+    detect_color_boundary:
+        If ``True``, also detect and sample boundaries between color regions.
 
     Returns
     -------
@@ -208,6 +212,13 @@ def shape_image_to_dots(
     interior = fill_shape(mask, eff_spacing, fill_mode)
     if interior.size:
         pts = np.vstack([pts, interior])
-
     pts *= scale
+
+    if detect_color_boundary:
+        color_pts = color_boundaries_to_dots(
+            image_path, spacing, resize_to=resize_to
+        )
+        if len(color_pts):
+            pts = np.vstack([pts, color_pts])
+
     return pts
