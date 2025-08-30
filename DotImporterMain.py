@@ -497,7 +497,24 @@ class DPI_OT_detect_and_create(Operator):
                 outline=p.outline,
             )
         else:
-            centers, _ = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
+            scale = 1.0
+            gray_proc = gray
+            if p.resize_to and (w > p.resize_to or h > p.resize_to):
+                if w >= h:
+                    new_w = p.resize_to
+                    new_h = int(round(h * p.resize_to / w))
+                else:
+                    new_h = p.resize_to
+                    new_w = int(round(w * p.resize_to / h))
+                gray_pil = Image.fromarray((gray * 255).astype(np.uint8), mode="L")
+                gray_proc = np.array(
+                    gray_pil.resize((new_w, new_h), Image.Resampling.LANCZOS),
+                    dtype=np.float32,
+                ) / 255.0
+                scale = w / new_w
+            centers, _ = detect_centers(gray_proc, p.threshold, p.invert, p.min_area_px)
+            if scale != 1.0:
+                centers *= scale
 
         colors = sample_colors(rgb, centers)
         detected_count = len(centers)
