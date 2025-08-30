@@ -17,7 +17,7 @@ from pathlib import Path
 import csv
 import numpy as np
 
-from Convert import Line2Dots, Shape2Dots
+from Convert import Line2Dots, Shape2Dots, Mixed2Dots
 from Convert.utils import check_skimage
 
 
@@ -284,7 +284,7 @@ class DPIProps(PropertyGroup):
     )
     conversion_mode: EnumProperty(
         name="Conversion Mode",
-        items=[('NONE', 'None', ''), ('LINE', 'Line', ''), ('SHAPE', 'Shape', '')],
+        items=[('NONE', 'None', ''), ('LINE', 'Line', ''), ('SHAPE', 'Shape', ''), ('MIX', 'Mix', '')],
         description="Select conversion type for non-circular features",
         default='NONE'
     )
@@ -421,6 +421,19 @@ class DPI_OT_detect_and_create(Operator):
                 detect_color_boundary=p.detect_color_boundary,
                 outline=p.outline,
             )
+        elif p.conversion_mode == 'MIX':
+            centers = Mixed2Dots.mixed_image_to_dots(
+                img_path,
+                p.spacing,
+                fill_mode=p.fill_mode,
+                blur_radius=p.blur_radius,
+                thresh_scale=p.thresh_scale,
+                junction_ratio=p.junction_ratio,
+                max_points=p.max_points,
+                resize_to=p.resize_to,
+                detect_color_boundary=p.detect_color_boundary,
+                outline=p.outline,
+            )
         else:
             centers, _ = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
 
@@ -485,18 +498,20 @@ class DPI_PT_panel(Panel):
         box = layout.box()
         box.label(text="Detection")
         box.prop(p, "conversion_mode")
-        if p.conversion_mode == 'SHAPE':
+        if p.conversion_mode in {'SHAPE', 'MIX'}:
             box.prop(p, "outline", text="Outline を生成する")
         box.prop(p, "threshold")
         box.prop(p, "invert")
         box.prop(p, "min_area_px")
         box.prop(p, "spacing")
-        box.prop(p, "fill_mode")
-        box.prop(p, "detect_color_boundary")
+        if p.conversion_mode in {'SHAPE', 'MIX'}:
+            box.prop(p, "fill_mode")
+            box.prop(p, "detect_color_boundary")
+        if p.conversion_mode in {'LINE', 'MIX'}:
+            box.prop(p, "blur_radius")
+            box.prop(p, "thresh_scale")
+            box.prop(p, "junction_ratio")
         box.prop(p, "resize_to")
-        box.prop(p, "blur_radius")
-        box.prop(p, "thresh_scale")
-        box.prop(p, "junction_ratio")
 
         box2 = layout.box()
         box2.label(text="Placement")
