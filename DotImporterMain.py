@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from Convert import Line2Dots, Shape2Dots, Mixed2Dots
-from Convert.utils import check_skimage, sample_edge
+from Convert.utils import check_skimage, sample_edge, sample_curve
 from Convert.Shape2Dots import fill_shape
 
 
@@ -341,6 +341,11 @@ class DPIProps(PropertyGroup):
         ],
         default='NONE',
     )
+    fill_closed: BoolProperty(
+        name="Fill Closed", 
+        description="Fill interior points when curve is closed", 
+        default=False,
+    )
     detect_color_boundary: BoolProperty(
         name="Detect Color Boundary",
         description="Include boundaries between color regions for shape conversion",
@@ -634,6 +639,91 @@ class DPI_OT_mesh_to_dots(Operator):
         return {'FINISHED'}
 
 
+class DPI_OT_path_to_dots(Operator):
+    bl_idname = "dpi.path_to_dots"
+    bl_label = "Path to Dots"
+    bl_description = "Sample curve paths to generate dots"
+
+    def execute(self, context):
+        p = context.scene.dpi_props
+        obj = context.active_object
+        if not obj or obj.type != 'CURVE':
+            self.report({'ERROR'}, "Active curve object required")
+            return {'CANCELLED'}
+
+        spacing = p.spacing if p.spacing > 0 else 1.0
+        pts = sample_curve(obj, spacing)
+        points = [np.array(pt) for pt in pts]
+
+        if p.fill_closed and any(s.use_cyclic_u for s in obj.data.splines):
+            if len(points) >= 3:
+                origin = points[0]
+                tangent = points[1] - origin
+                tlen = float(np.linalg.norm(tangent))
+                if tlen == 0:
+                    tangent = np.array([1.0, 0.0, 0.0])
+                    tlen = 1.0
+                tangent /= tlen
+                normal = np.cross(tangent, points[2] - origin)
+                nlen = float(np.linalg.norm(normal))
+                if nlen == 0:
+                    normal = np.array([0.0, 0.0, 1.0])
+                    nlen = 1.0
+                normal /= nlen
+                bitangent = np.cross(normal, tangent)
+                blen = float(np.linalg.norm(bitangent))
+                if blen == 0:
+                    bitangent = np.array([0.0, 1.0, 0.0])
+                    blen = 1.0
+                bitangent /= blen
+
+                coords = []
+                for v in points:
+                    p3 = v - origin
+                    u = np.dot(p3, tangent)
+                    v2 = np.dot(p3, bitangent)
+                    coords.append((u, v2))
+                coords2d = np.array(coords)
+                min_uv = coords2d.min(axis=0)
+                coords_shift = coords2d - min_uv
+                max_uv = coords_shift.max(axis=0)
+                W = max(1, int(np.ceil(max_uv[0] / spacing)) + 1)
+                H = max(1, int(np.ceil(max_uv[1] / spacing)) + 1)
+                img = Image.new('1', (W, H), 0)
+                draw = ImageDraw.Draw(img)
+                poly_px = [((u) / spacing, (v) / spacing) for u, v in coords_shift]
+                draw.polygon(poly_px, fill=1)
+                mask = np.array(img, dtype=bool)
+                interior = fill_shape(mask, spacing=1.0, mode=p.fill_mode)
+                for x, y in interior:
+                    u = x * spacing + min_uv[0]
+                    v2 = y * spacing + min_uv[1]
+                    world_pt = origin + tangent * u + bitangent * v2
+                    points.append(world_pt)
+
+        if not points:
+            self.report({'WARNING'}, "No points generated")
+            return {'CANCELLED'}
+
+        pts = np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
+        centers2d = [(p[0], p[1]) for p in pts]
+        z_vals = [p[2] for p in pts]
+        create_vertices_object(
+            p.object_name or "PathDots",
+            centers2d,
+            1.0,
+            1.0,
+            1.0,
+            'topleft',
+            False,
+            p.collection_name,
+            spacing=p.spacing,
+            z_values=z_vals,
+        )
+        self.report({'INFO'}, f"Created {len(pts)} vertices from path")
+        return {'FINISHED'}
+
+
 # ---------- UI Panel ----------
 class DPI_PT_panel(Panel):
     bl_label = "Dot Importer"
@@ -702,13 +792,32 @@ class DPI_PT_mesh_panel(Panel):
         box.operator(DPI_OT_mesh_to_dots.bl_idname, icon='MESH_DATA')
 
 
+class DPI_PT_path_panel(Panel):
+    bl_label = "Path to Dots"
+    bl_idname = "DPI_PT_path_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Dot Importer"
+
+    def draw(self, context):
+        layout = self.layout
+        p = context.scene.dpi_props
+        box = layout.box()
+        box.prop(p, "spacing")
+        box.prop(p, "fill_closed")
+        box.prop(p, "fill_mode")
+        box.operator(DPI_OT_path_to_dots.bl_idname, icon='CURVE_DATA')
+
+
 # ---------- Register ----------
 classes = (
     DPIProps,
     DPI_OT_detect_and_create,
     DPI_OT_mesh_to_dots,
+    DPI_OT_path_to_dots,
     DPI_PT_panel,
     DPI_PT_mesh_panel,
+    DPI_PT_path_panel,
 )
 
 def register():
