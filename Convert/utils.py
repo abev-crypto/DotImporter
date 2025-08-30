@@ -210,3 +210,141 @@ def sample_polys(polys, spacing, junction_ratio):
             pts_all.append(pts)
     pts = np.vstack(pts_all) if pts_all else np.zeros((0, 2))
     return global_thin(pts, min_dist=spacing * 0.95)
+
+def graph_from_image(image_path, blur=0.5, thresh_scale=0.8):
+    img = Image.open(image_path).convert('L')
+    arr = np.array(img.filter(ImageFilter.GaussianBlur(radius=blur)))
+    H, W = arr.shape
+    skel = skeletonize(arr < arr.mean()*thresh_scale)
+    coords = np.argwhere(skel)
+    idx_map = -np.ones_like(arr, dtype=np.int32)
+    for i,(r,c) in enumerate(coords):
+        idx_map[r,c] = i
+    adj = [[] for _ in range(len(coords))]
+    for i,(r,c) in enumerate(coords):
+        for dr in (-1,0,1):
+            for dc in (-1,0,1):
+                if dr==0 and dc==0: continue
+                rr,cc=r+dr,c+dc
+                if 0<=rr<H and 0<=cc<W and skel[rr,cc]:
+                    j=idx_map[rr,cc]
+                    if j>=0: adj[i].append(j)
+    deg = np.array([len(a) for a in adj])
+    return img, coords, adj, deg
+
+def extract_edge_paths(coords, adj, deg):
+    visited=set(); paths=[]
+    for u in range(len(coords)):
+        for v in adj[u]:
+            if (u,v) in visited: continue
+            path=[u]; visited.add((u,v)); visited.add((v,u))
+            prev=u; curr=v; path.append(curr)
+            while deg[curr]==2:
+                n0,n1 = adj[curr][0], adj[curr][1]
+                nxt = n0 if n1==prev else n1
+                if (curr,nxt) in visited: break
+                visited.add((curr,nxt)); visited.add((nxt,curr))
+                prev,curr = curr,nxt; path.append(curr)
+            paths.append(path)
+    polys_idx = paths
+    polys_xy = []
+    for p in polys_idx:
+        xy=np.array([[coords[i][1],coords[i][0]] for i in p],dtype=float)
+        if len(xy)>=2:
+            mask=np.append(True, np.any(np.diff(xy,axis=0)!=0,axis=1))
+            xy=xy[mask]
+        if len(xy)>=2: polys_xy.append(xy)
+    return polys_idx, polys_xy
+
+def anchors_from_graph(coords, deg, adj, corner_thresh_deg=40):
+    ends = np.where(deg==1)[0]
+    hubs = np.where(deg>=3)[0]
+    anchors_idx = set(ends.tolist() + hubs.tolist())
+    # corners detection
+    for i in range(len(coords)):
+        if deg[i]==2:
+            n0,n1 = adj[i]
+            v0 = coords[n0]-coords[i]; v1=coords[n1]-coords[i]
+            v0=v0/np.linalg.norm(v0); v1=v1/np.linalg.norm(v1)
+            ang=np.degrees(np.arccos(np.clip(np.dot(v0,v1),-1,1)))
+            if ang >= corner_thresh_deg:
+                anchors_idx.add(i)
+    anchors_idx = sorted(list(anchors_idx))
+    anchors_xy = np.array([[coords[i][1],coords[i][0]] for i in anchors_idx], dtype=float)
+    return anchors_idx, anchors_xy, set(anchors_idx)
+
+def split_poly_at_anchors(poly_idx, anchors_set):
+    out=[]; cur=[poly_idx[0]]
+    for i in range(1,len(poly_idx)):
+        idx=poly_idx[i]; cur.append(idx)
+        if idx in anchors_set:
+            if len(cur)>=2: out.append(cur)
+            cur=[idx]
+    if len(cur)>=2: out.append(cur)
+    return out
+
+def resample_segment(poly_xy, min_spacing):
+    seg = np.diff(poly_xy, axis=0)
+    seglen = np.sqrt((seg**2).sum(axis=1))
+    L=float(seglen.sum())
+    if L==0: return np.zeros((0,2))
+    q=int(np.floor(L/min_spacing))
+    if q<=0:
+        return np.array([poly_xy[len(poly_xy)//2]]) # relaxed midpoint
+    if q==1:
+        return np.array([0.5*(poly_xy[0]+poly_xy[-1])])
+    N=q-1
+    s=L/(N+1)
+    t=np.linspace(s,L-s,N)
+    out=[]; acc=0.0; j=0
+    for target in t:
+        while j < len(seglen) and acc+seglen[j]<target:
+            acc+=seglen[j]; j+=1
+        if j>=len(seglen):
+            out.append(poly_xy[-1]); break
+        alpha=(target-acc)/seglen[j] if seglen[j] else 0.0
+        out.append(poly_xy[j]+alpha*(poly_xy[j+1]-poly_xy[j]))
+    return np.array(out)
+
+def global_cleanup(points, min_dist):
+    if len(points)==0: return points
+    kept=[]; tree=None
+    for p in points:
+        if tree is None: kept.append(p); tree=cKDTree(np.array(kept)); continue
+        d,_=tree.query(p,k=1)
+        if d>=min_dist: kept.append(p); tree=cKDTree(np.array(kept))
+    return np.array(kept)
+
+def test():
+    # Run pipeline on this new image
+    img_path = '/mnt/data/fb2a9d5ee228473602f737150dbfb25e-2343292115.png'
+    img, coords, adj, deg = graph_from_image(img_path)
+    poly_idx, polys_xy = extract_edge_paths(coords, adj, deg)
+    anchors_idx, anchors_xy, anchors_set = anchors_from_graph(coords, deg, adj, corner_thresh_deg=40)
+
+    # merge anchors
+    if len(anchors_xy):
+        tree=cKDTree(anchors_xy); used=set(); merged=[]
+        for i,p in enumerate(anchors_xy):
+            if i in used: continue
+            idxs=tree.query_ball_point(p,r=1.5)
+            used.update(idxs)
+            merged.append(np.mean(anchors_xy[idxs],axis=0))
+        anchor_points=np.array(merged)
+    else:
+        anchor_points=np.zeros((0,2))
+
+    min_spacing=20.0
+
+    interior=[]
+    for idxs,poly in zip(poly_idx,polys_xy):
+        segs=split_poly_at_anchors(idxs,anchors_set)
+        for seg_idx in segs:
+            seg_xy=np.array([[coords[i][1],coords[i][0]] for i in seg_idx],dtype=float)
+            pts=resample_segment(seg_xy,min_spacing)
+            if len(pts): interior.append(pts)
+    interior_pts=np.vstack(interior) if interior else np.zeros((0,2))
+
+    all_pts=anchor_points.copy()
+    if len(interior_pts): all_pts=np.vstack([all_pts,interior_pts])
+    all_pts=global_cleanup(all_pts, min_dist=min_spacing*0.95)
