@@ -86,7 +86,7 @@ def fill_shape(mask: np.ndarray, spacing: float, mode: str) -> np.ndarray:
             if yi >= H:
                 continue
             offset = (spacing / 2.0) if (row % 2) == 1 else 0.0
-            xs = np.arange(offset, W, spacing)
+            xs = np.arange(offset, max(W - 1, 0) + 1e-6, spacing)
             for x in xs:
                 xi = int(round(x))
                 if xi < W and mask[yi, xi]:
@@ -115,9 +115,11 @@ def fill_shape(mask: np.ndarray, spacing: float, mode: str) -> np.ndarray:
         tree = None
         area = int(mask.sum())
         max_trials = area * 5 if area > 0 else 0
+        max_x = max(W - 1, 0)
+        max_y = max(H - 1, 0)
         for _ in range(max_trials):
-            x = np.random.uniform(0, W)
-            y = np.random.uniform(0, H)
+            x = np.random.uniform(0, max_x) if max_x > 0 else 0.0
+            y = np.random.uniform(0, max_y) if max_y > 0 else 0.0
             xi, yi = int(x), int(y)
             if xi >= W or yi >= H or not mask[yi, xi]:
                 continue
