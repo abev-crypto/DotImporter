@@ -293,6 +293,18 @@ class DPIProps(PropertyGroup):
         description="Spacing between sampled points (pixels)",
         default=10.0, min=0.0,
     )
+    fill_mode: EnumProperty(
+        name="Fill Mode",
+        description="Method to generate interior points for shape conversion",
+        items=[
+            ('NONE', 'None', ''),
+            ('GRID', 'Grid', ''),
+            ('SEMIGRID', 'SemiGrid', ''),
+            ('TOPOLOGY', 'Topology', ''),
+            ('RANDOM', 'Random', ''),
+        ],
+        default='NONE',
+    )
     resize_to: IntProperty(
         name="Resize Max",
         description=(
@@ -393,6 +405,7 @@ class DPI_OT_detect_and_create(Operator):
                 img_path,
                 p.spacing,
                 junction_ratio=p.junction_ratio,
+                fill_mode=p.fill_mode,
                 max_points=p.max_points,
                 resize_to=p.resize_to,
             )
@@ -464,6 +477,7 @@ class DPI_PT_panel(Panel):
         box.prop(p, "invert")
         box.prop(p, "min_area_px")
         box.prop(p, "spacing")
+        box.prop(p, "fill_mode")
         box.prop(p, "resize_to")
         box.prop(p, "blur_radius")
         box.prop(p, "thresh_scale")
