@@ -325,8 +325,11 @@ class DPIProps(PropertyGroup):
         default=True
     )
     min_area_px: IntProperty(
-        name="Min Area (px)",
-        description="Ignore components smaller than this (in pixels)",
+        name="Min Area (orig px)",
+        description=(
+            "Ignore components smaller than this (in original image pixels; "
+            "auto-scaled when resizing)"
+        ),
         default=20, min=1, soft_max=2000
     )
     conversion_mode: EnumProperty(
@@ -497,7 +500,6 @@ class DPI_OT_detect_and_create(Operator):
                 outline=p.outline,
             )
         else:
-            scale = 1.0
             gray_proc = gray
             if p.resize_to and (w > p.resize_to or h > p.resize_to):
                 if w >= h:
@@ -511,8 +513,9 @@ class DPI_OT_detect_and_create(Operator):
                     gray_pil.resize((new_w, new_h), Image.Resampling.LANCZOS),
                     dtype=np.float32,
                 ) / 255.0
-                scale = w / new_w
-            centers, _ = detect_centers(gray_proc, p.threshold, p.invert, p.min_area_px)
+            scale = w / gray_proc.shape[1]
+            min_area_px_scaled = max(1, int(p.min_area_px / (scale ** 2)))
+            centers, _ = detect_centers(gray_proc, p.threshold, p.invert, min_area_px_scaled)
             if scale != 1.0:
                 centers *= scale
 
