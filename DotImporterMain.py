@@ -222,9 +222,11 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
                            flip_y, collection_name, max_points=0, spacing=10.0,
                            z_values=None):
     centers = np.asarray(centers_px, dtype=np.float32)
+    orig_count = centers.shape[0]
     if max_points > 0:
         if centers.shape[0] > max_points:
             centers = centers[:max_points]
+            orig_count = centers.shape[0]
         elif centers.shape[0] < max_points:
             extra = max_points - centers.shape[0]
             step = max(spacing, 1.0)
@@ -247,6 +249,15 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
         X, Y = pixels_to_blender_xy(x, y, img_w, img_h, unit_per_px, origin_mode, flip_y)
         Z = float(z_values[i]) if z_values is not None and i < len(z_values) else 0.0
         verts.append((X, Y, Z))
+
+    # Normalize original vertices to fit within [-1, 1]
+    if orig_count > 0:
+        arr = np.array(verts[:orig_count], dtype=np.float32)
+        max_abs = np.max(np.abs(arr[:, :2]), axis=0)
+        denom = max(max_abs[0], max_abs[1])
+        if denom > 0:
+            scale = 1.0 / denom
+            verts = [(vx * scale, vy * scale, vz) for (vx, vy, vz) in verts]
 
     mesh = bpy.data.meshes.new(name + "_Mesh")
     mesh.from_pydata(verts, [], [])
