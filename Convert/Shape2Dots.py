@@ -2,6 +2,7 @@
 
 import numpy as np
 from PIL import Image, ImageFilter
+from scipy.spatial import cKDTree
 from skimage.morphology import binary_erosion, disk, skeletonize
 
 from .ColorBoundaries import color_boundaries_to_dots
@@ -95,10 +96,11 @@ def fill_shape(mask: np.ndarray, spacing: float, mode: str) -> np.ndarray:
     if mode == 'TOPOLOGY':
         pts_list = []
         current = mask.copy()
-        struct = disk(1)
+        step = max(1, int(round(spacing)))
+        struct = disk(step)
         while np.any(current):
-            outline = current ^ binary_erosion(current, footprint=struct)
-            skel = skeletonize(outline)
+            ring = current ^ binary_erosion(current, footprint=struct)
+            skel = skeletonize(ring)
             pts = _skeleton_to_dots(skel, spacing)
             if len(pts) == 0:
                 break
@@ -109,11 +111,6 @@ def fill_shape(mask: np.ndarray, spacing: float, mode: str) -> np.ndarray:
         return np.empty((0, 2), dtype=np.float32)
 
     if mode == 'RANDOM':
-        try:
-            from scipy.spatial import cKDTree
-        except Exception:  # pragma: no cover - optional dependency
-            cKDTree = None
-
         pts = []
         tree = None
         area = int(mask.sum())
@@ -128,8 +125,7 @@ def fill_shape(mask: np.ndarray, spacing: float, mode: str) -> np.ndarray:
                 if tree.query_ball_point((x, y), spacing):
                     continue
             pts.append((x, y))
-            if cKDTree is not None:
-                tree = cKDTree(pts)
+            tree = cKDTree(pts)
         return np.array(pts, dtype=np.float32)
 
     return np.empty((0, 2), dtype=np.float32)
@@ -192,6 +188,10 @@ def shape_image_to_dots(
 
     if fill_mode == 'TOPOLOGY':
         pts = fill_shape(mask, eff_spacing, fill_mode)
+        if max_points > 0 and len(pts) > max_points:
+            while len(pts) > max_points and eff_spacing > 0:
+                eff_spacing *= len(pts) / max_points
+                pts = fill_shape(mask, eff_spacing, fill_mode)
         pts *= scale
         return pts
 
@@ -216,13 +216,29 @@ def shape_image_to_dots(
     # Skeletonize to obtain a 1px outline
     skel = skeletonize(outline)
 
-    pts = _skeleton_to_dots(skel, eff_spacing)
-    if max_points > 0 and len(pts) > max_points:
-        while len(pts) > max_points:
-            eff_spacing *= len(pts) / max_points
-            pts = _skeleton_to_dots(skel, eff_spacing)
+    outline_limit = max_points
+    fill_limit = 0
+    if max_points > 0 and fill_mode != 'NONE':
+        outline_limit = max_points // 2 if outline else 0
+        fill_limit = max_points - outline_limit
 
-    interior = fill_shape(mask, eff_spacing, fill_mode)
+    eff_spacing_outline = eff_spacing
+    pts = _skeleton_to_dots(skel, eff_spacing_outline)
+    if outline_limit > 0 and len(pts) > outline_limit:
+        while len(pts) > outline_limit:
+            eff_spacing_outline *= len(pts) / outline_limit
+            pts = _skeleton_to_dots(skel, eff_spacing_outline)
+
+    eff_spacing_fill = eff_spacing
+    interior = fill_shape(mask, eff_spacing_fill, fill_mode)
+    if fill_limit > 0 and len(interior) > fill_limit:
+        while len(interior) > fill_limit and eff_spacing_fill > 0:
+            eff_spacing_fill *= len(interior) / fill_limit
+            interior = fill_shape(mask, eff_spacing_fill, fill_mode)
+    if interior.size and len(pts):
+        dists, _ = cKDTree(pts).query(interior, k=1)
+        min_dist = min(eff_spacing_outline, eff_spacing_fill) * 0.95
+        interior = interior[dists >= min_dist]
     if interior.size:
         pts = np.vstack([pts, interior])
     pts *= scale
