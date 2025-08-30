@@ -7,64 +7,13 @@ from skimage.morphology import binary_erosion, disk, skeletonize
 from .utils import graph_to_dots
 
 
-def shape_image_to_dots(
-    image_path: str,
-    spacing: float,
-    junction_ratio: float = 0.35,
-    *,
-    max_points: int = 0,
-    resize_to: int = 0,
-) -> np.ndarray:
-    """Sample points along the outline of a silhouette image.
-
-    Parameters
-    ----------
-    image_path:
-        Path to the silhouette image. The silhouette should be dark on a
-        light background.
-    spacing:
-        Desired spacing between consecutive points in pixels.
-    junction_ratio:
-        Fraction of ``spacing`` used as margin around junctions.
-    max_points:
-        If greater than ``0``, adapt the spacing so that the number of
-        sampled points does not exceed this value.
-    resize_to:
-        Resize the image so that its longer side equals this value (keeping
-        aspect ratio) before processing. ``0`` disables resizing.
-
-    Returns
-    -------
-    np.ndarray
-        Array of shape ``(N, 2)`` containing ``(x, y)`` coordinates of the
-        sampled outline points. ``N`` may be zero if no outline is detected.
-    """
-
-    img = Image.open(image_path).convert("L")
-    orig_w, orig_h = img.size
-    if resize_to and (orig_w > resize_to or orig_h > resize_to):
-        img.thumbnail((resize_to, resize_to), Image.Resampling.LANCZOS)
-    scale = orig_w / img.size[0] if img.size[0] else 1.0
-
-    # Binarize (silhouette = foreground True)
-    arr = np.array(img)
-    foreground = arr < 128  # silhouette is black on white
-
-    # Outline extraction (morphological gradient)
-    outline = foreground ^ binary_erosion(foreground, footprint=disk(1))
-
-    # Optional blur to stabilize jagged edges before skeletonization
-    outline_img = Image.fromarray((outline * 255).astype(np.uint8)).filter(
-        ImageFilter.GaussianBlur(radius=0.0)
-    )
-    outline = np.array(outline_img) > 0
-
-    # Skeletonize to obtain a 1px outline
-    skel = skeletonize(outline)
-
-    # Build adjacency graph of skeleton pixels
+def _skeleton_to_dots(skel: np.ndarray, spacing: float) -> np.ndarray:
+    """Return sampled dots from a skeletonized mask."""
     H, W = skel.shape
     coords = np.argwhere(skel)
+    if len(coords) == 0:
+        return np.empty((0, 2), dtype=np.float32)
+
     idx_map = -np.ones((H, W), dtype=np.int32)
     for i, (r, c) in enumerate(coords):
         idx_map[r, c] = i
@@ -88,12 +37,177 @@ def shape_image_to_dots(
                 if j >= 0:
                     adj[i].append(j)
     deg = np.array([len(a) for a in adj])
+    return graph_to_dots(coords, adj, deg, spacing)
+
+
+def fill_shape(mask: np.ndarray, spacing: float, mode: str) -> np.ndarray:
+    """Generate interior points within ``mask`` according to ``mode``.
+
+    Parameters
+    ----------
+    mask:
+        Boolean array where ``True`` indicates the region to fill.
+    spacing:
+        Desired spacing between points in pixels.
+    mode:
+        One of ``'NONE'``, ``'GRID'``, ``'SEMIGRID'``, ``'TOPOLOGY'`` or
+        ``'RANDOM'``.
+    """
+    if spacing <= 0:
+        return np.empty((0, 2), dtype=np.float32)
+
+    H, W = mask.shape
+    mode = mode.upper()
+
+    if mode == 'NONE':
+        return np.empty((0, 2), dtype=np.float32)
+
+    if mode == 'GRID':
+        ys = np.arange(0, H, spacing)
+        xs = np.arange(0, W, spacing)
+        pts = []
+        for y in ys:
+            yi = int(round(y))
+            if yi >= H:
+                continue
+            for x in xs:
+                xi = int(round(x))
+                if xi < W and mask[yi, xi]:
+                    pts.append((x, y))
+        return np.array(pts, dtype=np.float32)
+
+    if mode == 'SEMIGRID':
+        ys = np.arange(0, H, spacing)
+        pts = []
+        for row, y in enumerate(ys):
+            yi = int(round(y))
+            if yi >= H:
+                continue
+            offset = (spacing / 2.0) if (row % 2) == 1 else 0.0
+            xs = np.arange(offset, W, spacing)
+            for x in xs:
+                xi = int(round(x))
+                if xi < W and mask[yi, xi]:
+                    pts.append((x, y))
+        return np.array(pts, dtype=np.float32)
+
+    if mode == 'TOPOLOGY':
+        pts_list = []
+        current = mask.copy()
+        struct = disk(1)
+        while np.any(current):
+            outline = current ^ binary_erosion(current, footprint=struct)
+            skel = skeletonize(outline)
+            pts = _skeleton_to_dots(skel, spacing)
+            if len(pts) == 0:
+                break
+            pts_list.append(pts)
+            current = binary_erosion(current, footprint=struct)
+        if pts_list:
+            return np.vstack(pts_list)
+        return np.empty((0, 2), dtype=np.float32)
+
+    if mode == 'RANDOM':
+        try:
+            from scipy.spatial import cKDTree
+        except Exception:  # pragma: no cover - optional dependency
+            cKDTree = None
+
+        pts = []
+        tree = None
+        area = int(mask.sum())
+        max_trials = area * 5 if area > 0 else 0
+        for _ in range(max_trials):
+            x = np.random.uniform(0, W)
+            y = np.random.uniform(0, H)
+            xi, yi = int(x), int(y)
+            if xi >= W or yi >= H or not mask[yi, xi]:
+                continue
+            if tree is not None:
+                if tree.query_ball_point((x, y), spacing):
+                    continue
+            pts.append((x, y))
+            if cKDTree is not None:
+                tree = cKDTree(pts)
+        return np.array(pts, dtype=np.float32)
+
+    return np.empty((0, 2), dtype=np.float32)
+
+
+def shape_image_to_dots(
+    image_path: str,
+    spacing: float,
+    junction_ratio: float = 0.35,
+    *,
+    fill_mode: str = 'NONE',
+    max_points: int = 0,
+    resize_to: int = 0,
+) -> np.ndarray:
+    """Sample points from a silhouette image.
+
+    Parameters
+    ----------
+    image_path:
+        Path to the silhouette image. The silhouette should be dark on a
+        light background.
+    spacing:
+        Desired spacing between consecutive points in pixels.
+    junction_ratio:
+        Fraction of ``spacing`` used as margin around junctions.
+    fill_mode:
+        Strategy for generating interior points inside the silhouette.
+    max_points:
+        If greater than ``0``, adapt the spacing so that the number of
+        sampled outline points does not exceed this value.
+    resize_to:
+        Resize the image so that its longer side equals this value (keeping
+        aspect ratio) before processing. ``0`` disables resizing.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``(N, 2)`` containing ``(x, y)`` coordinates of the
+        sampled points. ``N`` may be zero if no region is detected.
+    """
+
+    img = Image.open(image_path).convert("L")
+    orig_w, orig_h = img.size
+    if resize_to and (orig_w > resize_to or orig_h > resize_to):
+        img.thumbnail((resize_to, resize_to), Image.Resampling.LANCZOS)
+    scale = orig_w / img.size[0] if img.size[0] else 1.0
+
+    # Binarize (silhouette = foreground True)
+    arr = np.array(img)
+    mask = arr < 128  # silhouette is black on white
 
     eff_spacing = spacing / scale
-    pts = graph_to_dots(coords, adj, deg, eff_spacing)
+
+    if fill_mode == 'TOPOLOGY':
+        pts = fill_shape(mask, eff_spacing, fill_mode)
+        pts *= scale
+        return pts
+
+    # Outline extraction (morphological gradient)
+    outline = mask ^ binary_erosion(mask, footprint=disk(1))
+
+    # Optional blur to stabilize jagged edges before skeletonization
+    outline_img = Image.fromarray((outline * 255).astype(np.uint8)).filter(
+        ImageFilter.GaussianBlur(radius=0.0)
+    )
+    outline = np.array(outline_img) > 0
+
+    # Skeletonize to obtain a 1px outline
+    skel = skeletonize(outline)
+
+    pts = _skeleton_to_dots(skel, eff_spacing)
     if max_points > 0 and len(pts) > max_points:
         while len(pts) > max_points:
             eff_spacing *= len(pts) / max_points
-            pts = graph_to_dots(coords, adj, deg, eff_spacing)
+            pts = _skeleton_to_dots(skel, eff_spacing)
+
+    interior = fill_shape(mask, eff_spacing, fill_mode)
+    if interior.size:
+        pts = np.vstack([pts, interior])
+
     pts *= scale
     return pts
