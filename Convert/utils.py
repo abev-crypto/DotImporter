@@ -164,6 +164,35 @@ def sample_poly(poly, spacing, start_offset=None, end_margin=0.0):
     return np.array(out)
 
 
+def sample_edge(v0, v1, spacing):
+    """Divide the edge from ``v0`` to ``v1`` by ``spacing`` and return points.
+
+    Parameters
+    ----------
+    v0, v1 : array-like, shape (3,)
+        Endpoints of the edge in 3D space.
+    spacing : float
+        Desired spacing between points along the edge.
+
+    Returns
+    -------
+    ndarray
+        Sampled points of shape ``(N, 3)`` including both end points.
+    """
+    v0 = np.asarray(v0, dtype=float)
+    v1 = np.asarray(v1, dtype=float)
+    seg = v1 - v0
+    L = float(np.linalg.norm(seg))
+    if L == 0:
+        return np.array([v0])
+    if spacing <= 0:
+        return np.vstack([v0, v1])
+    direction = seg / L
+    dists = np.arange(0.0, L, spacing)
+    dists = np.append(dists, L)
+    return v0 + np.outer(dists, direction)
+
+
 def global_thin(points, min_dist):
     """Globally thin points so no pair is closer than ``min_dist``."""
     if len(points) == 0:
