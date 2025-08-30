@@ -373,7 +373,7 @@ class DPIProps(PropertyGroup):
             "Resize image so the longer side equals this value before processing "
             "(0 disables resizing)"
         ),
-        default=0, min=0,
+        default=512, min=0,
     )
     blur_radius: FloatProperty(
         name="Blur Radius",
@@ -420,7 +420,7 @@ class DPIProps(PropertyGroup):
     max_points: IntProperty(
         name="Max Points",
         description="Maximum number of vertices to create (0 for unlimited). Missing points are placed outside the image bounds with uniform spacing.",
-        default=0, min=0
+        default=500, min=0
     )
     height_map_path: StringProperty(
         name="Height Map",
@@ -434,7 +434,7 @@ class DPIProps(PropertyGroup):
     )
     save_csv: BoolProperty(
         name="Save CSV",
-        default=True,
+        default=False,
         description="Export detected points with color to CSV",
     )
 
