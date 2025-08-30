@@ -215,7 +215,9 @@ def pixels_to_blender_xy(x, y, w, h, unit_per_px, origin_mode, flip_y):
     return X, Y
 
 
-def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_mode, flip_y, collection_name, max_points=0, spacing=10.0):
+def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_mode,
+                           flip_y, collection_name, max_points=0, spacing=10.0,
+                           z_values=None):
     centers = np.asarray(centers_px, dtype=np.float32)
     if max_points > 0:
         if centers.shape[0] > max_points:
@@ -233,13 +235,15 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
                 if x >= img_w:
                     x = 0.0
                     y += step
-            extra_centers = np.stack([np.array(xs, dtype=np.float32), np.array(ys, dtype=np.float32)], axis=1)
+            extra_centers = np.stack([np.array(xs, dtype=np.float32),
+                                      np.array(ys, dtype=np.float32)], axis=1)
             centers = np.vstack([centers, extra_centers])
 
     verts = []
-    for x, y in centers:
+    for i, (x, y) in enumerate(centers):
         X, Y = pixels_to_blender_xy(x, y, img_w, img_h, unit_per_px, origin_mode, flip_y)
-        verts.append((X, Y, 0.0))
+        Z = float(z_values[i]) if z_values is not None and i < len(z_values) else 0.0
+        verts.append((X, Y, Z))
 
     mesh = bpy.data.meshes.new(name + "_Mesh")
     mesh.from_pydata(verts, [], [])
@@ -251,7 +255,21 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
         coll = bpy.data.collections.new(collection_name)
         bpy.context.scene.collection.children.link(coll)
     coll.objects.link(obj)
-    return obj, len(verts), centers
+    return obj, len(verts), centers, verts
+
+
+def create_mesh_with_faces(points, width, height):
+    faces = []
+    for y in range(height - 1):
+        for x in range(width - 1):
+            i = y * width + x
+            faces.append((i, i + 1, i + width))
+            faces.append((i + 1, i + width + 1, i + width))
+    mesh = bpy.data.meshes.new("HeightMesh")
+    mesh.from_pydata(points, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new("HeightMesh", mesh)
+    return obj
 
 
 # ---------- Properties ----------
@@ -370,6 +388,16 @@ class DPIProps(PropertyGroup):
         description="Maximum number of vertices to create (0 for unlimited). Missing points are placed outside the image bounds with uniform spacing.",
         default=0, min=0
     )
+    height_map_path: StringProperty(
+        name="Height Map",
+        subtype='FILE_PATH',
+        description="Grayscale image used as height map",
+    )
+    auto_height: BoolProperty(
+        name="Auto Height",
+        description="Use height map brightness as vertex Z value",
+        default=False,
+    )
     save_csv: BoolProperty(
         name="Save CSV",
         default=True,
@@ -427,12 +455,39 @@ class DPI_OT_detect_and_create(Operator):
         colors = sample_colors(rgb, centers)
         detected_count = len(centers)
 
+        z_vals = None
+        hm_w = hm_h = 0
+        if p.auto_height and p.height_map_path:
+            try:
+                hgray, _, hm_w, hm_h = load_image_grayscale_np(
+                    bpy.path.abspath(p.height_map_path))
+                z_vals = []
+                for x, y in centers:
+                    xi = int(round(float(x)))
+                    yi = int(round(float(y)))
+                    xi = min(max(xi, 0), hm_w - 1)
+                    yi = min(max(yi, 0), hm_h - 1)
+                    z_vals.append(float(hgray[yi, xi]) * p.unit_per_px)
+            except Exception as e:
+                self.report({'WARNING'}, f"Failed to load height map: {e}")
+                z_vals = None
+
         # Create points in Blender (may add extra vertices)
-        obj, n, final_centers = create_vertices_object(
+        obj, n, final_centers, verts = create_vertices_object(
             p.object_name, centers, w, h,
             p.unit_per_px, p.origin_mode, p.flip_y,
-            p.collection_name, p.max_points, p.spacing
+            p.collection_name, p.max_points, p.spacing,
+            z_values=z_vals
         )
+
+        if z_vals is not None and len(verts) == hm_w * hm_h:
+            mesh_obj = create_mesh_with_faces(verts, hm_w, hm_h)
+            mesh_obj.name = p.object_name + "_Mesh"
+            coll = bpy.data.collections.get(p.collection_name)
+            if not coll:
+                coll = bpy.data.collections.new(p.collection_name)
+                bpy.context.scene.collection.children.link(coll)
+            coll.objects.link(mesh_obj)
 
         final_len = len(final_centers)
         if colors.shape[0] > final_len:
@@ -506,6 +561,11 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "collection_name")
         box2.prop(p, "object_name")
         box2.prop(p, "max_points")
+
+        box3 = layout.box()
+        box3.label(text="Height Map")
+        box3.prop(p, "height_map_path")
+        box3.prop(p, "auto_height")
 
         layout.prop(p, "save_csv")
         layout.operator(DPI_OT_detect_and_create.bl_idname, icon='PARTICLES')
