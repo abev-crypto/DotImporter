@@ -219,7 +219,7 @@ def shape_image_to_dots(
     outline_limit = max_points
     fill_limit = 0
     if max_points > 0 and fill_mode != 'NONE':
-        outline_limit = max_points // 2 if outline else 0
+        outline_limit = max_points // 2 if outline.any() else 0
         fill_limit = max_points - outline_limit
 
     eff_spacing_outline = eff_spacing
