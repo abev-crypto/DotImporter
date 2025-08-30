@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from .utils import edge_paths, load_skeleton, sample_polys
+from .utils import graph_to_dots, load_skeleton
 
 
 def line_image_to_dots(
@@ -50,13 +50,11 @@ def line_image_to_dots(
         thresh_scale=thresh_scale,
         resize_to=resize_to,
     )
-    polys = edge_paths(coords, adj, deg)
-
     eff_spacing = spacing / scale
-    pts_clean = sample_polys(polys, eff_spacing, junction_ratio)
-    if max_points > 0 and len(pts_clean) > max_points:
-        while len(pts_clean) > max_points:
-            eff_spacing *= len(pts_clean) / max_points
-            pts_clean = sample_polys(polys, eff_spacing, junction_ratio)
-    pts_clean *= scale
-    return pts_clean
+    pts = graph_to_dots(coords, adj, deg, eff_spacing)
+    if max_points > 0 and len(pts) > max_points:
+        while len(pts) > max_points:
+            eff_spacing *= len(pts) / max_points
+            pts = graph_to_dots(coords, adj, deg, eff_spacing)
+    pts *= scale
+    return pts
