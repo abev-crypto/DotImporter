@@ -310,6 +310,11 @@ class DPIProps(PropertyGroup):
         description="Include boundaries between color regions for shape conversion",
         default=False,
     )
+    outline: BoolProperty(
+        name="Outline",
+        description="Generate outline from the silhouette for shape conversion",
+        default=True,
+    )
     resize_to: IntProperty(
         name="Resize Max",
         description=(
@@ -414,6 +419,7 @@ class DPI_OT_detect_and_create(Operator):
                 max_points=p.max_points,
                 resize_to=p.resize_to,
                 detect_color_boundary=p.detect_color_boundary,
+                outline=p.outline,
             )
         else:
             centers, _ = detect_centers(gray, p.threshold, p.invert, p.min_area_px)
@@ -479,6 +485,8 @@ class DPI_PT_panel(Panel):
         box = layout.box()
         box.label(text="Detection")
         box.prop(p, "conversion_mode")
+        if p.conversion_mode == 'SHAPE':
+            box.prop(p, "outline", text="Outline を生成する")
         box.prop(p, "threshold")
         box.prop(p, "invert")
         box.prop(p, "min_area_px")

@@ -144,6 +144,7 @@ def shape_image_to_dots(
     max_points: int = 0,
     resize_to: int = 0,
     detect_color_boundary: bool = False,
+    outline: bool = True,
 ) -> np.ndarray:
     """Sample points from a silhouette image.
 
@@ -166,6 +167,9 @@ def shape_image_to_dots(
         aspect ratio) before processing. ``0`` disables resizing.
     detect_color_boundary:
         If ``True``, also detect and sample boundaries between color regions.
+    outline:
+        If ``True``, extract and sample the silhouette outline. ``False``
+        skips outline extraction and only applies ``fill_shape``.
 
     Returns
     -------
@@ -188,6 +192,15 @@ def shape_image_to_dots(
 
     if fill_mode == 'TOPOLOGY':
         pts = fill_shape(mask, eff_spacing, fill_mode)
+        pts *= scale
+        return pts
+
+    if not outline:
+        pts = fill_shape(mask, eff_spacing, fill_mode)
+        if max_points > 0 and len(pts) > max_points:
+            while len(pts) > max_points and eff_spacing > 0:
+                eff_spacing *= len(pts) / max_points
+                pts = fill_shape(mask, eff_spacing, fill_mode)
         pts *= scale
         return pts
 
