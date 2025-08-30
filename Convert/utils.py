@@ -193,6 +193,70 @@ def sample_edge(v0, v1, spacing):
     return v0 + np.outer(dists, direction)
 
 
+def sample_curve(curve_obj, spacing):
+    """Sample a Bezier or NURBS curve object at roughly equal spacing.
+
+    Parameters
+    ----------
+    curve_obj : bpy.types.Object
+        Curve object to sample. ``curve_obj.type`` must be ``'CURVE'``.
+    spacing : float
+        Desired spacing between sampled points.
+
+    Returns
+    -------
+    ndarray
+        Sampled points of shape ``(N, 3)`` in world coordinates.
+    """
+
+    import math
+    from mathutils import Vector
+    from mathutils.geometry import interpolate_bezier
+
+    if spacing <= 0:
+        spacing = 1.0
+
+    mw = curve_obj.matrix_world
+    points: list[np.ndarray] = []
+
+    for spline in curve_obj.data.splines:
+        if spline.type == 'BEZIER':
+            bps = spline.bezier_points
+            n = len(bps)
+            if n == 0:
+                continue
+            seg_count = n if spline.use_cyclic_u else n - 1
+            for i in range(seg_count):
+                bp0 = bps[i]
+                bp1 = bps[(i + 1) % n]
+                p0 = mw @ bp0.co
+                h0 = mw @ bp0.handle_right
+                p1 = mw @ bp1.co
+                h1 = mw @ bp1.handle_left
+                chord = (p1 - p0).length
+                steps = max(2, int(math.ceil(chord / spacing)) + 1)
+                seg = interpolate_bezier(p0, h0, h1, p1, steps)
+                arr = np.array([list(v) for v in seg], dtype=float)
+                if points:
+                    arr = arr[1:]
+                points.extend(arr)
+        else:  # NURBS or POLY
+            pts = [mw @ Vector((p.co.x, p.co.y, p.co.z)) for p in spline.points]
+            n = len(pts)
+            if n == 0:
+                continue
+            seg_count = n if spline.use_cyclic_u else n - 1
+            for i in range(seg_count):
+                v0 = np.array(pts[i], dtype=float)
+                v1 = np.array(pts[(i + 1) % n], dtype=float)
+                seg = sample_edge(v0, v1, spacing)
+                if points:
+                    seg = seg[1:]
+                points.extend(seg)
+
+    return np.array(points, dtype=float)
+
+
 def global_thin(points, min_dist):
     """Globally thin points so no pair is closer than ``min_dist``."""
     if len(points) == 0:
