@@ -315,36 +315,66 @@ def global_cleanup(points, min_dist):
         if d>=min_dist: kept.append(p); tree=cKDTree(np.array(kept))
     return np.array(kept)
 
+def graph_to_dots(coords, adj, deg, spacing, corner_thresh_deg=40):
+    """Convert a skeleton graph into sampled point coordinates.
+
+    Parameters
+    ----------
+    coords : ndarray
+        Array of node coordinates as ``(row, col)``.
+    adj : list[list[int]]
+        Adjacency list of the graph.
+    deg : ndarray
+        Degree of each node.
+    spacing : float
+        Desired minimum spacing between sampled points.
+    corner_thresh_deg : float, optional
+        Angle threshold in degrees to treat a degree-2 node as an anchor.
+
+    Returns
+    -------
+    ndarray
+        Sampled ``(x, y)`` coordinates.
+    """
+
+    poly_idx, polys_xy = extract_edge_paths(coords, adj, deg)
+    anchors_idx, anchors_xy, anchors_set = anchors_from_graph(
+        coords, deg, adj, corner_thresh_deg=corner_thresh_deg
+    )
+
+    if len(anchors_xy):
+        tree = cKDTree(anchors_xy)
+        used: set[int] = set()
+        merged = []
+        for i, p in enumerate(anchors_xy):
+            if i in used:
+                continue
+            idxs = tree.query_ball_point(p, r=1.5)
+            used.update(idxs)
+            merged.append(np.mean(anchors_xy[idxs], axis=0))
+        anchor_points = np.array(merged)
+    else:
+        anchor_points = np.zeros((0, 2))
+
+    interior = []
+    for idxs, _poly in zip(poly_idx, polys_xy):
+        segs = split_poly_at_anchors(idxs, anchors_set)
+        for seg_idx in segs:
+            seg_xy = np.array(
+                [[coords[i][1], coords[i][0]] for i in seg_idx], dtype=float
+            )
+            pts = resample_segment(seg_xy, spacing)
+            if len(pts):
+                interior.append(pts)
+    interior_pts = np.vstack(interior) if interior else np.zeros((0, 2))
+
+    all_pts = anchor_points.copy()
+    if len(interior_pts):
+        all_pts = np.vstack([all_pts, interior_pts])
+    return global_cleanup(all_pts, min_dist=spacing * 0.95)
+
 def test():
     # Run pipeline on this new image
     img_path = '/mnt/data/fb2a9d5ee228473602f737150dbfb25e-2343292115.png'
-    img, coords, adj, deg = graph_from_image(img_path)
-    poly_idx, polys_xy = extract_edge_paths(coords, adj, deg)
-    anchors_idx, anchors_xy, anchors_set = anchors_from_graph(coords, deg, adj, corner_thresh_deg=40)
-
-    # merge anchors
-    if len(anchors_xy):
-        tree=cKDTree(anchors_xy); used=set(); merged=[]
-        for i,p in enumerate(anchors_xy):
-            if i in used: continue
-            idxs=tree.query_ball_point(p,r=1.5)
-            used.update(idxs)
-            merged.append(np.mean(anchors_xy[idxs],axis=0))
-        anchor_points=np.array(merged)
-    else:
-        anchor_points=np.zeros((0,2))
-
-    min_spacing=20.0
-
-    interior=[]
-    for idxs,poly in zip(poly_idx,polys_xy):
-        segs=split_poly_at_anchors(idxs,anchors_set)
-        for seg_idx in segs:
-            seg_xy=np.array([[coords[i][1],coords[i][0]] for i in seg_idx],dtype=float)
-            pts=resample_segment(seg_xy,min_spacing)
-            if len(pts): interior.append(pts)
-    interior_pts=np.vstack(interior) if interior else np.zeros((0,2))
-
-    all_pts=anchor_points.copy()
-    if len(interior_pts): all_pts=np.vstack([all_pts,interior_pts])
-    all_pts=global_cleanup(all_pts, min_dist=min_spacing*0.95)
+    _img, coords, adj, deg = graph_from_image(img_path)
+    all_pts = graph_to_dots(coords, adj, deg, spacing=20.0)
