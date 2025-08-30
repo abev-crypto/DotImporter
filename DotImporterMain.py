@@ -645,8 +645,8 @@ class DPI_OT_mesh_to_dots(Operator):
             min_uv = coords2d.min(axis=0)
             coords_shift = coords2d - min_uv
             max_uv = coords_shift.max(axis=0)
-            W = max(1, int(np.ceil(max_uv[0] / spacing)) + 1)
-            H = max(1, int(np.ceil(max_uv[1] / spacing)) + 1)
+            W = max(1, int(np.floor(max_uv[0] / spacing)) + 1)
+            H = max(1, int(np.floor(max_uv[1] / spacing)) + 1)
             img = Image.new('1', (W, H), 0)
             draw = ImageDraw.Draw(img)
             poly_px = [((u) / spacing, (v) / spacing) for u, v in coords_shift]
@@ -665,6 +665,8 @@ class DPI_OT_mesh_to_dots(Operator):
             return {'CANCELLED'}
 
         pts = np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
+        if p.max_points > 0 and len(pts) > p.max_points:
+            pts = pts[:p.max_points]
         create_points_object(p.object_name or "MeshDots", pts, p.collection_name)
         self.report({'INFO'}, f"Created {len(pts)} vertices from mesh")
         return {'FINISHED'}
@@ -718,8 +720,8 @@ class DPI_OT_path_to_dots(Operator):
                 min_uv = coords2d.min(axis=0)
                 coords_shift = coords2d - min_uv
                 max_uv = coords_shift.max(axis=0)
-                W = max(1, int(np.ceil(max_uv[0] / spacing)) + 1)
-                H = max(1, int(np.ceil(max_uv[1] / spacing)) + 1)
+                W = max(1, int(np.floor(max_uv[0] / spacing)) + 1)
+                H = max(1, int(np.floor(max_uv[1] / spacing)) + 1)
                 img = Image.new('1', (W, H), 0)
                 draw = ImageDraw.Draw(img)
                 poly_px = [((u) / spacing, (v) / spacing) for u, v in coords_shift]
