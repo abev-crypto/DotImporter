@@ -600,73 +600,83 @@ class DPI_OT_mesh_to_dots(Operator):
             self.report({'ERROR'}, "Active mesh object required")
             return {'CANCELLED'}
 
+        def sample_mesh(spacing: float) -> np.ndarray:
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            edges = list(bm.edges)
+            faces = list(bm.faces)
+            mw = obj.matrix_world
+
+            points = []
+            for e in edges:
+                v0 = np.array(mw @ e.verts[0].co)
+                v1 = np.array(mw @ e.verts[1].co)
+                pts = sample_edge(v0, v1, spacing)
+                if len(pts):
+                    points.extend(pts)
+
+            for f in faces:
+                verts = [np.array(mw @ v.co) for v in f.verts]
+                origin = verts[0]
+                normal = np.array(mw.to_3x3() @ f.normal)
+                nlen = np.linalg.norm(normal)
+                if nlen == 0:
+                    continue
+                normal /= nlen
+                tangent = verts[1] - origin
+                tlen = np.linalg.norm(tangent)
+                if tlen == 0:
+                    continue
+                tangent /= tlen
+                bitangent = np.cross(normal, tangent)
+                blen = np.linalg.norm(bitangent)
+                if blen == 0:
+                    continue
+                bitangent /= blen
+
+                coords2d = []
+                for v in verts:
+                    p3 = v - origin
+                    u = np.dot(p3, tangent)
+                    v2 = np.dot(p3, bitangent)
+                    coords2d.append((u, v2))
+                coords2d = np.array(coords2d)
+                min_uv = coords2d.min(axis=0)
+                coords_shift = coords2d - min_uv
+                max_uv = coords_shift.max(axis=0)
+                W = max(1, int(np.floor(max_uv[0] / spacing)) + 1)
+                H = max(1, int(np.floor(max_uv[1] / spacing)) + 1)
+                img = Image.new('1', (W, H), 0)
+                draw = ImageDraw.Draw(img)
+                poly_px = [((u) / spacing, (v) / spacing) for u, v in coords_shift]
+                draw.polygon(poly_px, fill=1)
+                mask = np.array(img, dtype=bool)
+                interior = fill_shape(mask, spacing=1.0, mode=p.fill_mode)
+                for x, y in interior:
+                    u = x * spacing + min_uv[0]
+                    v2 = y * spacing + min_uv[1]
+                    world_pt = origin + tangent * u + bitangent * v2
+                    points.append(world_pt)
+
+            bm.free()
+            if not points:
+                return np.empty((0, 3), dtype=float)
+            return np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
+
         spacing = p.spacing if p.spacing > 0 else 1.0
-
-        bm = bmesh.new()
-        bm.from_mesh(obj.data)
-        edges = list(bm.edges)
-        faces = list(bm.faces)
-        mw = obj.matrix_world
-
-        points = []
-        for e in edges:
-            v0 = np.array(mw @ e.verts[0].co)
-            v1 = np.array(mw @ e.verts[1].co)
-            pts = sample_edge(v0, v1, spacing)
-            if len(pts):
-                points.extend(pts)
-
-        for f in faces:
-            verts = [np.array(mw @ v.co) for v in f.verts]
-            origin = verts[0]
-            normal = np.array(mw.to_3x3() @ f.normal)
-            nlen = np.linalg.norm(normal)
-            if nlen == 0:
-                continue
-            normal /= nlen
-            tangent = verts[1] - origin
-            tlen = np.linalg.norm(tangent)
-            if tlen == 0:
-                continue
-            tangent /= tlen
-            bitangent = np.cross(normal, tangent)
-            blen = np.linalg.norm(bitangent)
-            if blen == 0:
-                continue
-            bitangent /= blen
-
-            coords2d = []
-            for v in verts:
-                p3 = v - origin
-                u = np.dot(p3, tangent)
-                v2 = np.dot(p3, bitangent)
-                coords2d.append((u, v2))
-            coords2d = np.array(coords2d)
-            min_uv = coords2d.min(axis=0)
-            coords_shift = coords2d - min_uv
-            max_uv = coords_shift.max(axis=0)
-            W = max(1, int(np.floor(max_uv[0] / spacing)) + 1)
-            H = max(1, int(np.floor(max_uv[1] / spacing)) + 1)
-            img = Image.new('1', (W, H), 0)
-            draw = ImageDraw.Draw(img)
-            poly_px = [((u) / spacing, (v) / spacing) for u, v in coords_shift]
-            draw.polygon(poly_px, fill=1)
-            mask = np.array(img, dtype=bool)
-            interior = fill_shape(mask, spacing=1.0, mode=p.fill_mode)
-            for x, y in interior:
-                u = x * spacing + min_uv[0]
-                v2 = y * spacing + min_uv[1]
-                world_pt = origin + tangent * u + bitangent * v2
-                points.append(world_pt)
-
-        bm.free()
-        if not points:
+        pts = sample_mesh(spacing)
+        if pts.size == 0:
             self.report({'WARNING'}, "No points generated")
             return {'CANCELLED'}
 
-        pts = np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
         if p.max_points > 0 and len(pts) > p.max_points:
-            pts = pts[:p.max_points]
+            eff_spacing = spacing
+            while len(pts) > p.max_points:
+                eff_spacing *= len(pts) / p.max_points
+                pts = sample_mesh(eff_spacing)
+                if pts.size == 0:
+                    break
+
         create_points_object(p.object_name or "MeshDots", pts, p.collection_name)
         self.report({'INFO'}, f"Created {len(pts)} vertices from mesh")
         return {'FINISHED'}
