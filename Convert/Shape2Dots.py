@@ -5,7 +5,7 @@ from PIL import Image, ImageFilter
 from scipy.spatial import cKDTree
 from skimage.morphology import binary_erosion, disk, skeletonize
 
-from .ColorBoundaries import color_boundaries_to_dots
+from .ColorBoundaries import grayscale_boundaries_to_dots
 from .utils import graph_to_dots
 
 
@@ -246,10 +246,10 @@ def shape_image_to_dots(
     pts *= scale
 
     if detect_color_boundary:
-        color_pts = color_boundaries_to_dots(
+        edge_pts = grayscale_boundaries_to_dots(
             image_path, spacing, resize_to=resize_to
         )
-        if len(color_pts):
-            pts = np.vstack([pts, color_pts])
+        if len(edge_pts):
+            pts = np.vstack([pts, edge_pts])
 
     return pts
