@@ -393,6 +393,11 @@ class DPIProps(PropertyGroup):
         description="Margin ratio around junctions",
         default=0.35, min=0.0,
     )
+    mix_thickness: FloatProperty(
+        name="Mix Thickness",
+        description="Pixel width threshold to treat regions as shapes",
+        default=4.0, min=0.0,
+    )
     unit_per_px: FloatProperty(
         name="Unit per Pixel",
         description="Scale factor from pixel to Blender unit",
@@ -498,6 +503,7 @@ class DPI_OT_detect_and_create(Operator):
                 resize_to=p.resize_to,
                 detect_color_boundary=p.detect_color_boundary,
                 outline=p.outline,
+                thickness_thresh=p.mix_thickness,
             )
         else:
             gray_proc = gray
@@ -799,6 +805,8 @@ class DPI_PT_panel(Panel):
             box.prop(p, "blur_radius")
             box.prop(p, "thresh_scale")
             box.prop(p, "junction_ratio")
+        if p.conversion_mode == 'MIX':
+            box.prop(p, "mix_thickness")
         box.prop(p, "resize_to")
 
         box2 = layout.box()
