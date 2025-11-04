@@ -139,6 +139,7 @@ def shape_image_to_dots(
     junction_ratio: float = 0.35,
     *,
     fill_mode: str = 'NONE',
+    fill_ratio: float = 0.5,
     max_points: int = 0,
     resize_to: int = 0,
     detect_color_boundary: bool = False,
@@ -157,6 +158,11 @@ def shape_image_to_dots(
         Fraction of ``spacing`` used as margin around junctions.
     fill_mode:
         Strategy for generating interior points inside the silhouette.
+    fill_ratio:
+        When ``fill_mode`` is enabled alongside outline extraction, the
+        fraction of ``max_points`` initially reserved for interior samples.
+        ``0`` favours outlines, ``1`` favours fills. Values outside the
+        ``[0, 1]`` range are clamped.
     max_points:
         If greater than ``0``, adapt the spacing so that the number of
         sampled outline points does not exceed this value.
@@ -222,8 +228,16 @@ def shape_image_to_dots(
     outline_limit = max_points
     fill_limit = 0
     if max_points > 0 and fill_mode != 'NONE':
-        outline_limit = max_points // 2 if outline.any() else 0
-        fill_limit = max_points - outline_limit
+        ratio = float(fill_ratio)
+        if not np.isfinite(ratio):
+            ratio = 0.5
+        ratio = min(max(ratio, 0.0), 1.0)
+        if outline.any():
+            fill_limit = int(round(max_points * ratio))
+            outline_limit = max_points - fill_limit
+        else:
+            outline_limit = 0
+            fill_limit = max_points
 
     eff_spacing_outline = eff_spacing
     pts = _skeleton_to_dots(skel, eff_spacing_outline)
@@ -231,6 +245,10 @@ def shape_image_to_dots(
         while len(pts) > outline_limit:
             eff_spacing_outline *= len(pts) / outline_limit
             pts = _skeleton_to_dots(skel, eff_spacing_outline)
+
+    outline_count = len(pts)
+    if max_points > 0 and fill_mode != 'NONE':
+        fill_limit = max(0, max_points - outline_count)
 
     eff_spacing_fill = eff_spacing
     interior = fill_shape(mask, eff_spacing_fill, fill_mode)
