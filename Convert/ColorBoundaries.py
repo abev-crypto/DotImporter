@@ -40,14 +40,18 @@ def color_boundaries_to_dots(
 
     arr = np.asarray(img, dtype=np.int16)
     H, W, _ = arr.shape
-    boundary = np.zeros((H, W), dtype=bool)
 
-    # Compare vertical neighbors
-    diff_v = np.linalg.norm(arr[1:, :] - arr[:-1, :], axis=2) > diff_thresh
-    boundary[:-1, :] |= diff_v
-    # Compare horizontal neighbors
-    diff_h = np.linalg.norm(arr[:, 1:] - arr[:, :-1], axis=2) > diff_thresh
-    boundary[:, :-1] |= diff_h
+    # Compute color differences to right and bottom neighbors and keep the
+    # maximum magnitude as the per-pixel gradient estimate. Using the maximum
+    # helps capture boundaries regardless of the dominant direction.
+    diff_r = np.zeros((H, W), dtype=np.float32)
+    diff_d = np.zeros((H, W), dtype=np.float32)
+    if W > 1:
+        diff_r[:, :-1] = np.linalg.norm(arr[:, 1:] - arr[:, :-1], axis=2)
+    if H > 1:
+        diff_d[:-1, :] = np.linalg.norm(arr[1:, :] - arr[:-1, :], axis=2)
+    grad = np.maximum(diff_r, diff_d)
+    boundary = grad > diff_thresh
 
     skel = skeletonize(boundary)
     coords = np.argwhere(skel)
