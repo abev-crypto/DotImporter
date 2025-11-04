@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import numpy as np
+from pathlib import Path
+
 from PIL import Image
 from skimage.morphology import skeletonize
 from scipy.ndimage import convolve
@@ -52,6 +54,22 @@ def color_boundaries_to_dots(
         diff_d[:-1, :] = np.linalg.norm(arr[1:, :] - arr[:-1, :], axis=2)
     grad = np.maximum(diff_r, diff_d)
     boundary = grad > diff_thresh
+
+    # Save debug visualizations so the detected boundary quality can be
+    # inspected outside of the pipeline.
+    debug_base = Path(image_path)
+    if debug_base.suffix:
+        debug_base = debug_base.with_name(f"{debug_base.stem}_color_boundary{debug_base.suffix}")
+    else:
+        debug_base = debug_base.with_name(f"{debug_base.name}_color_boundary.png")
+
+    try:
+        boundary_img = Image.fromarray(boundary.astype(np.uint8) * 255)
+        boundary_img.save(debug_base)
+    except Exception:
+        # If saving fails we simply continue processing without surfacing an
+        # error because this output is purely for debugging convenience.
+        pass
 
     skel = skeletonize(boundary)
     coords = np.argwhere(skel)

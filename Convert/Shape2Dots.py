@@ -5,7 +5,7 @@ from PIL import Image, ImageFilter
 from scipy.spatial import cKDTree
 from skimage.morphology import binary_erosion, disk, skeletonize
 
-from .ColorBoundaries import grayscale_boundaries_to_dots
+from .ColorBoundaries import color_boundaries_to_dots
 from .utils import graph_to_dots
 
 
@@ -164,7 +164,8 @@ def shape_image_to_dots(
         Resize the image so that its longer side equals this value (keeping
         aspect ratio) before processing. ``0`` disables resizing.
     detect_color_boundary:
-        If ``True``, also detect and sample boundaries between color regions.
+        If ``True``, also detect and sample boundaries between color regions
+        using :func:`color_boundaries_to_dots`.
     outline:
         If ``True``, extract and sample the silhouette outline. ``False``
         skips outline extraction and only applies ``fill_shape``.
@@ -246,7 +247,7 @@ def shape_image_to_dots(
     pts *= scale
 
     if detect_color_boundary:
-        edge_pts = grayscale_boundaries_to_dots(
+        edge_pts = color_boundaries_to_dots(
             image_path, spacing, resize_to=resize_to
         )
         if len(edge_pts):
