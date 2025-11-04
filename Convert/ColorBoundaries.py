@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import numpy as np
+from pathlib import Path
+
 from PIL import Image
 from skimage.morphology import skeletonize
 from scipy.ndimage import convolve
@@ -40,14 +42,34 @@ def color_boundaries_to_dots(
 
     arr = np.asarray(img, dtype=np.int16)
     H, W, _ = arr.shape
-    boundary = np.zeros((H, W), dtype=bool)
 
-    # Compare vertical neighbors
-    diff_v = np.linalg.norm(arr[1:, :] - arr[:-1, :], axis=2) > diff_thresh
-    boundary[:-1, :] |= diff_v
-    # Compare horizontal neighbors
-    diff_h = np.linalg.norm(arr[:, 1:] - arr[:, :-1], axis=2) > diff_thresh
-    boundary[:, :-1] |= diff_h
+    # Compute color differences to right and bottom neighbors and keep the
+    # maximum magnitude as the per-pixel gradient estimate. Using the maximum
+    # helps capture boundaries regardless of the dominant direction.
+    diff_r = np.zeros((H, W), dtype=np.float32)
+    diff_d = np.zeros((H, W), dtype=np.float32)
+    if W > 1:
+        diff_r[:, :-1] = np.linalg.norm(arr[:, 1:] - arr[:, :-1], axis=2)
+    if H > 1:
+        diff_d[:-1, :] = np.linalg.norm(arr[1:, :] - arr[:-1, :], axis=2)
+    grad = np.maximum(diff_r, diff_d)
+    boundary = grad > diff_thresh
+
+    # Save debug visualizations so the detected boundary quality can be
+    # inspected outside of the pipeline.
+    debug_base = Path(image_path)
+    if debug_base.suffix:
+        debug_base = debug_base.with_name(f"{debug_base.stem}_color_boundary{debug_base.suffix}")
+    else:
+        debug_base = debug_base.with_name(f"{debug_base.name}_color_boundary.png")
+
+    try:
+        boundary_img = Image.fromarray(boundary.astype(np.uint8) * 255)
+        boundary_img.save(debug_base)
+    except Exception:
+        # If saving fails we simply continue processing without surfacing an
+        # error because this output is purely for debugging convenience.
+        pass
 
     skel = skeletonize(boundary)
     coords = np.argwhere(skel)
