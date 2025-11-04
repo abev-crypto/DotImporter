@@ -355,6 +355,15 @@ class DPIProps(PropertyGroup):
         ],
         default='NONE',
     )
+    fill_ratio: FloatProperty(
+        name="Fill Weight",
+        description=(
+            "割合 0=アウトライン優先, 1=塗り優先 (Fill Mode 使用時のみ適用)"
+        ),
+        default=0.5,
+        min=0.0,
+        max=1.0,
+    )
     fill_closed: BoolProperty(
         name="Fill Closed", 
         description="Fill interior points when curve is closed", 
@@ -486,6 +495,7 @@ class DPI_OT_detect_and_create(Operator):
                 p.spacing,
                 junction_ratio=p.junction_ratio,
                 fill_mode=p.fill_mode,
+                fill_ratio=p.fill_ratio,
                 max_points=p.max_points,
                 resize_to=p.resize_to,
                 detect_color_boundary=p.detect_color_boundary,
@@ -496,6 +506,7 @@ class DPI_OT_detect_and_create(Operator):
                 img_path,
                 p.spacing,
                 fill_mode=p.fill_mode,
+                fill_ratio=p.fill_ratio,
                 blur_radius=p.blur_radius,
                 thresh_scale=p.thresh_scale,
                 junction_ratio=p.junction_ratio,
@@ -800,6 +811,8 @@ class DPI_PT_panel(Panel):
         box.prop(p, "spacing")
         if p.conversion_mode in {'SHAPE', 'MIX'}:
             box.prop(p, "fill_mode")
+            if p.fill_mode != 'NONE':
+                box.prop(p, "fill_ratio")
             box.prop(p, "detect_color_boundary")
         if p.conversion_mode in {'LINE', 'MIX'}:
             box.prop(p, "blur_radius")
@@ -840,6 +853,8 @@ class DPI_PT_mesh_panel(Panel):
         box = layout.box()
         box.prop(p, "spacing")
         box.prop(p, "fill_mode")
+        if p.fill_mode != 'NONE':
+            box.prop(p, "fill_ratio")
         box.operator(DPI_OT_mesh_to_dots.bl_idname, icon='MESH_DATA')
 
 
@@ -857,6 +872,8 @@ class DPI_PT_path_panel(Panel):
         box.prop(p, "spacing")
         box.prop(p, "fill_closed")
         box.prop(p, "fill_mode")
+        if p.fill_mode != 'NONE':
+            box.prop(p, "fill_ratio")
         box.operator(DPI_OT_path_to_dots.bl_idname, icon='CURVE_DATA')
 
 

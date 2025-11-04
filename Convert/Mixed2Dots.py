@@ -13,6 +13,7 @@ def mixed_image_to_dots(
     spacing: float,
     *,
     fill_mode: str = 'NONE',
+    fill_ratio: float = 0.5,
     blur_radius: float = 0.5,
     thresh_scale: float = 0.8,
     junction_ratio: float = 0.35,
@@ -32,6 +33,9 @@ def mixed_image_to_dots(
         Desired spacing between sampled points in pixels.
     fill_mode: str, optional
         Fill strategy used for :func:`shape_image_to_dots`.
+    fill_ratio: float, optional
+        Weight assigned to interior sampling when ``fill_mode`` is active in
+        :func:`shape_image_to_dots`.
     blur_radius: float, optional
         Gaussian blur radius for the line conversion.
     thresh_scale: float, optional
@@ -88,6 +92,7 @@ def mixed_image_to_dots(
         spacing,
         junction_ratio=junction_ratio,
         fill_mode=fill_mode,
+        fill_ratio=fill_ratio,
         max_points=max_points,
         resize_to=resize_to,
         detect_color_boundary=detect_color_boundary,
