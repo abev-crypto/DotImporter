@@ -27,7 +27,7 @@ from PIL import Image, ImageDraw
 from mathutils import Vector
 from typing import List, Optional
 
-from placement import (
+from Convert.placement import (
     build_kdtree,
     convex_hull_2d,
     create_region,
@@ -1215,8 +1215,6 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "output_range_x")
         box2.prop(p, "output_range_y")
         box2.prop(p, "vertex_spacing")
-        box2.prop(p, "ignore_unselected_spacing")
-        box2.prop(p, "placement_mode")
         box2.prop(p, "origin_mode")
         box2.prop(p, "flip_y")
         box2.prop(p, "collection_name")
@@ -1224,18 +1222,6 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "max_points")
         box2.prop(p, "bottom_reserve_ratio")
         box2.prop(p, "auto_adjust_max_points")
-        box2.prop(p, "randomize_use_mesh_region")
-        if p.randomize_use_mesh_region:
-            box2.prop(p, "mesh_region_object")
-        box2.prop(p, "randomize_use_custom_region")
-        row = box2.row(align=True)
-        row.operator(DPI_OT_load_custom_region.bl_idname, icon='EYEDROPPER')
-        row.operator(DPI_OT_randomize_selected_vertices.bl_idname, icon='FORCE_LENNARDJONES')
-        if p.custom_region_point_count > 0:
-            info = f"{p.custom_region_point_count} pts"
-            if p.custom_region_object_name:
-                info += f" ({p.custom_region_object_name})"
-            box2.label(text=f"Region: {info}")
 
         box3 = layout.box()
         box3.label(text="Height Map")
@@ -1244,6 +1230,23 @@ class DPI_PT_panel(Panel):
 
         layout.prop(p, "save_csv")
         layout.operator(DPI_OT_detect_and_create.bl_idname, icon='PARTICLES')
+
+        box4 = layout.box()
+        box4.label(text="ManualPlacement")
+        box4.prop(p, "placement_mode")
+        box4.prop(p, "ignore_unselected_spacing")
+        box4.prop(p, "randomize_use_mesh_region")
+        if p.randomize_use_mesh_region:
+            box4.prop(p, "mesh_region_object")
+        box4.prop(p, "randomize_use_custom_region")
+        row = box4.row(align=True)
+        row.operator(DPI_OT_load_custom_region.bl_idname, icon='EYEDROPPER')
+        row.operator(DPI_OT_randomize_selected_vertices.bl_idname, icon='FORCE_LENNARDJONES')
+        if p.custom_region_point_count > 0:
+            info = f"{p.custom_region_point_count} pts"
+            if p.custom_region_object_name:
+                info += f" ({p.custom_region_object_name})"
+            box4.label(text=f"Region: {info}")
 
 
 class DPI_PT_mesh_panel(Panel):
