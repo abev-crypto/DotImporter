@@ -296,7 +296,8 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
                     step_y = max(placement_spacing / unit_y, 1.0)
             xs = []
             ys = []
-            x, y = 0.0, float(img_h)
+            x = 0.0
+            y = float(img_h) + step_y
             for _ in range(extra):
                 xs.append(x)
                 ys.append(y)
@@ -545,6 +546,14 @@ class DPIProps(PropertyGroup):
         description="Maximum number of vertices to create (0 for unlimited). Missing points are placed outside the image bounds with uniform spacing.",
         default=500, min=0
     )
+    bottom_reserve_ratio: FloatProperty(
+        name="Reserve Bottom %",
+        description="割合 0=余白なし, 1=全ての頂点を下部に確保 (Max Points に対する割合)",
+        default=0.0,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR',
+    )
     auto_adjust_max_points: BoolProperty(
         name="Auto Expand Limit",
         description="Automatically raise the vertex limit so the requested spacing is preserved",
@@ -590,7 +599,15 @@ class DPI_OT_detect_and_create(Operator):
             self.report({'ERROR'}, f"Failed to load image: {e}")
             return {'CANCELLED'}
 
-        sampling_limit = 0 if p.auto_adjust_max_points else p.max_points
+        reserve_ratio = min(max(p.bottom_reserve_ratio, 0.0), 1.0)
+        sampling_limit = 0
+        allowed_ratio = 1.0
+        if not p.auto_adjust_max_points and p.max_points > 0:
+            allowed_ratio = max(0.0, 1.0 - reserve_ratio)
+            if allowed_ratio > 0.0:
+                sampling_limit = max(1, min(p.max_points, int(p.max_points * allowed_ratio)))
+            else:
+                sampling_limit = 0
         pixel_spacing = compute_image_spacing_px(p, w, h)
 
         if p.conversion_mode == 'LINE':
@@ -649,6 +666,12 @@ class DPI_OT_detect_and_create(Operator):
             centers, _ = detect_centers(gray_proc, p.threshold, p.invert, min_area_px_scaled)
             if scale != 1.0:
                 centers *= scale
+
+        if not p.auto_adjust_max_points and p.max_points > 0:
+            if allowed_ratio <= 0.0:
+                centers = np.empty((0, 2), dtype=np.float32)
+            elif sampling_limit > 0 and len(centers) > sampling_limit:
+                centers = centers[:sampling_limit]
 
         colors = sample_colors(rgb, centers)
         detected_count = len(centers)
@@ -1118,6 +1141,7 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "collection_name")
         box2.prop(p, "object_name")
         box2.prop(p, "max_points")
+        box2.prop(p, "bottom_reserve_ratio")
         box2.prop(p, "auto_adjust_max_points")
         box2.prop(p, "randomize_use_custom_region")
         row = box2.row(align=True)
