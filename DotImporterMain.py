@@ -24,6 +24,11 @@ from Convert.utils import check_skimage, sample_edge, sample_curve
 from Convert.Shape2Dots import fill_shape
 
 
+DEFAULT_MIN_AREA_PX = 20
+DEFAULT_PIXEL_SPACING = 10.0
+DEFAULT_GEOMETRY_SPACING = 1.0
+
+
 # ---------- Utility: image -> grayscale & RGB (numpy) ----------
 def load_image_grayscale_np(img_path: str):
     """
@@ -226,6 +231,25 @@ def compute_units_per_px(img_w: float, img_h: float, unit_per_px: float,
     return scale, scale
 
 
+def compute_image_spacing_px(props, img_w: float, img_h: float) -> float:
+    unit_x, _ = compute_units_per_px(
+        img_w,
+        img_h,
+        props.unit_per_px,
+        props.output_range_x,
+        props.output_range_y,
+    )
+    if props.vertex_spacing > 0 and unit_x > 0:
+        return max(props.vertex_spacing / unit_x, 1.0)
+    return DEFAULT_PIXEL_SPACING
+
+
+def compute_geometry_spacing(props) -> float:
+    if props.vertex_spacing > 0:
+        return props.vertex_spacing
+    return DEFAULT_GEOMETRY_SPACING
+
+
 def pixels_to_blender_xy(x, y, w, h, unit_x, unit_y, origin_mode, flip_y):
     if origin_mode == "center":
         X = (x - w * 0.5) * unit_x
@@ -356,24 +380,11 @@ class DPIProps(PropertyGroup):
         description="Treat darker-than-threshold as foreground",
         default=True
     )
-    min_area_px: IntProperty(
-        name="Min Area (orig px)",
-        description=(
-            "Ignore components smaller than this (in original image pixels; "
-            "auto-scaled when resizing)"
-        ),
-        default=20, min=1, soft_max=2000
-    )
     conversion_mode: EnumProperty(
         name="Conversion Mode",
         items=[('NONE', 'None', ''), ('LINE', 'Line', ''), ('SHAPE', 'Shape', ''), ('MIX', 'Mix', '')],
         description="Select conversion type for non-circular features",
         default='NONE'
-    )
-    spacing: FloatProperty(
-        name="Spacing",
-        description="Spacing between sampled points (pixels)",
-        default=10.0, min=0.0,
     )
     fill_mode: EnumProperty(
         name="Fill Mode",
@@ -462,7 +473,7 @@ class DPIProps(PropertyGroup):
     )
     vertex_spacing: FloatProperty(
         name="Vertex Spacing [m]",
-        description="Spacing between generated vertices in Blender units when adding extra points (0 to follow pixel spacing)",
+        description="Spacing between generated vertices in Blender units for sampling and placement (0 uses mode defaults)",
         default=0.0, min=0.0
     )
     origin_mode: EnumProperty(
@@ -538,11 +549,12 @@ class DPI_OT_detect_and_create(Operator):
             return {'CANCELLED'}
 
         sampling_limit = 0 if p.auto_adjust_max_points else p.max_points
+        pixel_spacing = compute_image_spacing_px(p, w, h)
 
         if p.conversion_mode == 'LINE':
             centers = Line2Dots.line_image_to_dots(
                 img_path,
-                p.spacing,
+                pixel_spacing,
                 blur_radius=p.blur_radius,
                 thresh_scale=p.thresh_scale,
                 junction_ratio=p.junction_ratio,
@@ -552,7 +564,7 @@ class DPI_OT_detect_and_create(Operator):
         elif p.conversion_mode == 'SHAPE':
             centers = Shape2Dots.shape_image_to_dots(
                 img_path,
-                p.spacing,
+                pixel_spacing,
                 junction_ratio=p.junction_ratio,
                 fill_mode=p.fill_mode,
                 fill_ratio=p.fill_ratio,
@@ -564,7 +576,7 @@ class DPI_OT_detect_and_create(Operator):
         elif p.conversion_mode == 'MIX':
             centers = Mixed2Dots.mixed_image_to_dots(
                 img_path,
-                p.spacing,
+                pixel_spacing,
                 fill_mode=p.fill_mode,
                 fill_ratio=p.fill_ratio,
                 blur_radius=p.blur_radius,
@@ -591,7 +603,7 @@ class DPI_OT_detect_and_create(Operator):
                     dtype=np.float32,
                 ) / 255.0
             scale = w / gray_proc.shape[1]
-            min_area_px_scaled = max(1, int(p.min_area_px / (scale ** 2)))
+            min_area_px_scaled = max(1, int(DEFAULT_MIN_AREA_PX / (scale ** 2)))
             centers, _ = detect_centers(gray_proc, p.threshold, p.invert, min_area_px_scaled)
             if scale != 1.0:
                 centers *= scale
@@ -601,7 +613,6 @@ class DPI_OT_detect_and_create(Operator):
         effective_max_points = p.max_points
         if p.auto_adjust_max_points and p.max_points > 0 and detected_count > p.max_points:
             effective_max_points = detected_count
-            p.max_points = detected_count
 
         z_vals = None
         hm_w = hm_h = 0
@@ -624,7 +635,7 @@ class DPI_OT_detect_and_create(Operator):
         obj, n, final_centers, verts = create_vertices_object(
             p.object_name, centers, w, h,
             p.unit_per_px, p.origin_mode, p.flip_y,
-            p.collection_name, effective_max_points, p.spacing,
+            p.collection_name, effective_max_points, pixel_spacing,
             z_values=z_vals,
             range_x=p.output_range_x,
             range_y=p.output_range_y,
@@ -750,23 +761,28 @@ class DPI_OT_mesh_to_dots(Operator):
                 return np.empty((0, 3), dtype=float)
             return np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
 
-        spacing = p.spacing if p.spacing > 0 else 1.0
+        spacing = compute_geometry_spacing(p)
         pts = sample_mesh(spacing)
         if pts.size == 0:
             self.report({'WARNING'}, "No points generated")
             return {'CANCELLED'}
 
-        if p.max_points > 0 and len(pts) > p.max_points:
+        effective_max_points = p.max_points
+        if p.auto_adjust_max_points and p.max_points > 0 and len(pts) > p.max_points:
+            effective_max_points = len(pts)
+
+        if effective_max_points > 0 and len(pts) > effective_max_points:
             if p.auto_adjust_max_points:
-                if len(pts) > p.max_points:
-                    p.max_points = len(pts)
+                pts = pts[:effective_max_points]
             else:
                 eff_spacing = spacing
-                while len(pts) > p.max_points:
-                    eff_spacing *= len(pts) / p.max_points
+                while len(pts) > effective_max_points:
+                    eff_spacing *= len(pts) / effective_max_points
                     pts = sample_mesh(eff_spacing)
                     if pts.size == 0:
                         break
+                if len(pts) > effective_max_points:
+                    pts = pts[:effective_max_points]
 
         create_points_object(p.object_name or "MeshDots", pts, p.collection_name)
         self.report({'INFO'}, f"Created {len(pts)} vertices from mesh")
@@ -785,7 +801,7 @@ class DPI_OT_path_to_dots(Operator):
             self.report({'ERROR'}, "Active curve object required")
             return {'CANCELLED'}
 
-        spacing = p.spacing if p.spacing > 0 else 1.0
+        spacing = compute_geometry_spacing(p)
         pts = sample_curve(obj, spacing)
         points = [np.array(pt) for pt in pts]
 
@@ -840,11 +856,12 @@ class DPI_OT_path_to_dots(Operator):
             return {'CANCELLED'}
 
         pts = np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
-        if p.max_points > 0 and len(pts) > p.max_points:
-            if p.auto_adjust_max_points:
-                p.max_points = len(pts)
-            else:
-                pts = pts[:p.max_points]
+        effective_max_points = p.max_points
+        if p.auto_adjust_max_points and p.max_points > 0 and len(pts) > p.max_points:
+            effective_max_points = len(pts)
+
+        if effective_max_points > 0 and len(pts) > effective_max_points:
+            pts = pts[:effective_max_points]
         centers2d = [(p[0], p[1]) for p in pts]
         z_vals = [p[2] for p in pts]
         create_vertices_object(
@@ -856,7 +873,7 @@ class DPI_OT_path_to_dots(Operator):
             'topleft',
             False,
             p.collection_name,
-            spacing=p.spacing,
+            spacing=spacing,
             z_values=z_vals,
             auto_adjust_max_points=p.auto_adjust_max_points,
         )
@@ -887,8 +904,6 @@ class DPI_PT_panel(Panel):
             box.prop(p, "outline", text="Outline を生成する")
         box.prop(p, "threshold")
         box.prop(p, "invert")
-        box.prop(p, "min_area_px")
-        box.prop(p, "spacing")
         if p.conversion_mode in {'SHAPE', 'MIX'}:
             box.prop(p, "fill_mode")
             if p.fill_mode != 'NONE':
@@ -935,7 +950,7 @@ class DPI_PT_mesh_panel(Panel):
         layout = self.layout
         p = context.scene.dpi_props
         box = layout.box()
-        box.prop(p, "spacing")
+        box.prop(p, "vertex_spacing")
         box.prop(p, "fill_mode")
         if p.fill_mode != 'NONE':
             box.prop(p, "fill_ratio")
@@ -953,7 +968,7 @@ class DPI_PT_path_panel(Panel):
         layout = self.layout
         p = context.scene.dpi_props
         box = layout.box()
-        box.prop(p, "spacing")
+        box.prop(p, "vertex_spacing")
         box.prop(p, "fill_closed")
         box.prop(p, "fill_mode")
         if p.fill_mode != 'NONE':
