@@ -528,6 +528,11 @@ class DPIProps(PropertyGroup):
         description="Spacing between generated vertices in Blender units for sampling and placement (0 uses mode defaults)",
         default=0.0, min=0.0
     )
+    ignore_unselected_spacing: BoolProperty(
+        name="Ignore Existing Vertices",
+        description="When moving selected vertices, ignore the spacing limit against unselected vertices",
+        default=False,
+    )
     randomize_use_mesh_region: BoolProperty(
         name="Use Mesh Region",
         description="Restrict placement to the area covered by another mesh object's faces",
@@ -1087,8 +1092,8 @@ class DPI_OT_randomize_selected_vertices(Operator):
             return {'CANCELLED'}
 
         spacing = float(props.vertex_spacing) if props.vertex_spacing > 0 else 0.0
-        static_coords = [v.co.copy() for v in bm.verts if not v.select]
-        static_tree = build_kdtree(static_coords) if spacing > 0 else None
+        static_coords = [] if props.ignore_unselected_spacing else [v.co.copy() for v in bm.verts if not v.select]
+        static_tree = build_kdtree(static_coords) if spacing > 0 and static_coords else None
 
         mesh_polygon = None
         mesh_source = ""
@@ -1210,6 +1215,7 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "output_range_x")
         box2.prop(p, "output_range_y")
         box2.prop(p, "vertex_spacing")
+        box2.prop(p, "ignore_unselected_spacing")
         box2.prop(p, "placement_mode")
         box2.prop(p, "origin_mode")
         box2.prop(p, "flip_y")
