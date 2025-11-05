@@ -16,8 +16,17 @@ from bpy.props import (
 )
 from pathlib import Path
 import csv
+import json
 import numpy as np
 from PIL import Image, ImageDraw
+from mathutils import Vector
+
+from placement import (
+    build_kdtree,
+    create_region,
+    grid_assignments,
+    randomize_assignments,
+)
 
 from Convert import Line2Dots, Shape2Dots, Mixed2Dots
 from Convert.utils import check_skimage, sample_edge, sample_curve
@@ -476,6 +485,39 @@ class DPIProps(PropertyGroup):
         description="Spacing between generated vertices in Blender units for sampling and placement (0 uses mode defaults)",
         default=0.0, min=0.0
     )
+    randomize_use_custom_region: BoolProperty(
+        name="Use Custom Region",
+        description="Restrict random placement to a stored custom region",
+        default=False,
+    )
+    placement_mode: EnumProperty(
+        name="Placement Mode",
+        description="Strategy for repositioning selected vertices",
+        items=[
+            ('RANDOM', "Random", "Place vertices randomly within the region"),
+            ('GRID', "Grid", "Arrange vertices along a grid topology"),
+        ],
+        default='RANDOM',
+    )
+    custom_region_json: StringProperty(
+        name="Custom Region Data",
+        description="Serialized polygon for custom placement region",
+        default="",
+        options={'HIDDEN'},
+    )
+    custom_region_object_name: StringProperty(
+        name="Custom Region Object",
+        description="Object name from which the custom region was captured",
+        default="",
+        options={'HIDDEN'},
+    )
+    custom_region_point_count: IntProperty(
+        name="Custom Region Points",
+        description="Number of vertices stored in the custom region",
+        default=0,
+        min=0,
+        options={'HIDDEN'},
+    )
     origin_mode: EnumProperty(
         name="Origin",
         description="Where to place (0,0) in Blender relative to the image",
@@ -881,6 +923,153 @@ class DPI_OT_path_to_dots(Operator):
         return {'FINISHED'}
 
 
+class DPI_OT_load_custom_region(Operator):
+    bl_idname = "dpi.load_custom_region"
+    bl_label = "Store Custom Region"
+    bl_description = "Store currently selected vertices as a custom placement region"
+
+    def execute(self, context):
+        props = context.scene.dpi_props
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Active mesh object required")
+            return {'CANCELLED'}
+
+        if obj.mode == 'EDIT':
+            bm = bmesh.from_edit_mesh(obj.data)
+            bm.verts.ensure_lookup_table()
+            coords = [v.co.copy() for v in bm.verts if v.select]
+        else:
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            bm.verts.ensure_lookup_table()
+            coords = [v.co.copy() for v in bm.verts if v.select]
+            bm.free()
+
+        if len(coords) < 3:
+            self.report({'WARNING'}, "Select at least 3 vertices to define a region")
+            return {'CANCELLED'}
+
+        data = {
+            "object": obj.name,
+            "points": [[float(c.x), float(c.y)] for c in coords],
+        }
+        try:
+            props.custom_region_json = json.dumps(data)
+        except TypeError as exc:
+            self.report({'ERROR'}, f"Failed to serialize region: {exc}")
+            return {'CANCELLED'}
+
+        props.custom_region_object_name = obj.name
+        props.custom_region_point_count = len(coords)
+        props.randomize_use_custom_region = True
+        self.report({'INFO'}, f"Stored custom region with {len(coords)} vertices from {obj.name}")
+        return {'FINISHED'}
+
+
+class DPI_OT_randomize_selected_vertices(Operator):
+    bl_idname = "dpi.randomize_selected_vertices"
+    bl_label = "Apply Placement"
+    bl_description = "Reposition selected vertices using the active placement mode while respecting spacing"
+
+    max_attempts: IntProperty(
+        name="Attempts",
+        description="Maximum attempts per vertex when searching for a valid random position",
+        default=200,
+        min=1,
+        max=2000,
+        options={'HIDDEN'},
+    )
+
+    def execute(self, context):
+        props = context.scene.dpi_props
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Active mesh object required")
+            return {'CANCELLED'}
+
+        is_edit_mode = (obj.mode == 'EDIT')
+        if is_edit_mode:
+            bm = bmesh.from_edit_mesh(obj.data)
+        else:
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+
+        selected_verts = [v for v in bm.verts if v.select]
+        if not selected_verts:
+            if not is_edit_mode:
+                bm.free()
+            self.report({'WARNING'}, "No selected vertices to randomize")
+            return {'CANCELLED'}
+
+        all_coords = [v.co.copy() for v in bm.verts]
+        if not all_coords:
+            if not is_edit_mode:
+                bm.free()
+            self.report({'WARNING'}, "Mesh contains no vertices")
+            return {'CANCELLED'}
+
+        spacing = float(props.vertex_spacing) if props.vertex_spacing > 0 else 0.0
+        static_coords = [v.co.copy() for v in bm.verts if not v.select]
+        static_tree = build_kdtree(static_coords) if spacing > 0 else None
+
+        region = create_region(
+            all_coords,
+            spacing,
+            props.randomize_use_custom_region,
+            props.custom_region_json,
+        )
+        if region.requested_custom and not region.using_custom and props.custom_region_json:
+            self.report({'WARNING'}, "Stored custom region is invalid. Using bounding box instead.")
+
+        target_coords = [vert.co.copy() for vert in selected_verts]
+        if props.placement_mode == 'GRID':
+            assignments, skipped = grid_assignments(
+                target_coords,
+                region,
+                spacing,
+                static_tree,
+            )
+            mode_label = "grid"
+        else:
+            assignments, skipped = randomize_assignments(
+                target_coords,
+                region,
+                spacing,
+                static_tree,
+                self.max_attempts,
+            )
+            mode_label = "random"
+
+        moved = 0
+        for vert, new_co in zip(selected_verts, assignments):
+            if new_co is None:
+                continue
+            vert.co = new_co
+            moved += 1
+
+        if is_edit_mode:
+            bmesh.update_edit_mesh(obj.data)
+        else:
+            bm.to_mesh(obj.data)
+            obj.data.update()
+            bm.free()
+
+        if region.using_custom and region.source_object and region.source_object != obj.name:
+            self.report({'INFO'}, f"Custom region captured from '{region.source_object}' applied to '{obj.name}'")
+
+        if skipped and not moved:
+            self.report({'WARNING'}, "No valid positions found with the current spacing")
+            return {'CANCELLED'}
+
+        msg = f"Moved {moved} vertices ({mode_label})"
+        if skipped:
+            msg += f", skipped {skipped}"
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+
 # ---------- UI Panel ----------
 class DPI_PT_panel(Panel):
     bl_label = "Dot Importer"
@@ -923,12 +1112,22 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "output_range_x")
         box2.prop(p, "output_range_y")
         box2.prop(p, "vertex_spacing")
+        box2.prop(p, "placement_mode")
         box2.prop(p, "origin_mode")
         box2.prop(p, "flip_y")
         box2.prop(p, "collection_name")
         box2.prop(p, "object_name")
         box2.prop(p, "max_points")
         box2.prop(p, "auto_adjust_max_points")
+        box2.prop(p, "randomize_use_custom_region")
+        row = box2.row(align=True)
+        row.operator(DPI_OT_load_custom_region.bl_idname, icon='EYEDROPPER')
+        row.operator(DPI_OT_randomize_selected_vertices.bl_idname, icon='FORCE_LENNARDJONES')
+        if p.custom_region_point_count > 0:
+            info = f"{p.custom_region_point_count} pts"
+            if p.custom_region_object_name:
+                info += f" ({p.custom_region_object_name})"
+            box2.label(text=f"Region: {info}")
 
         box3 = layout.box()
         box3.label(text="Height Map")
@@ -982,6 +1181,8 @@ classes = (
     DPI_OT_detect_and_create,
     DPI_OT_mesh_to_dots,
     DPI_OT_path_to_dots,
+    DPI_OT_load_custom_region,
+    DPI_OT_randomize_selected_vertices,
     DPI_PT_panel,
     DPI_PT_mesh_panel,
     DPI_PT_path_panel,
