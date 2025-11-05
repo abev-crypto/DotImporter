@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Dot Points Importer (CSV + Vertices)",
     "author": "ABEYUYA",
-    "version": (1, 3, 0),
+    "version": (1, 3, 1),
     "blender": (4, 3, 0),
     "location": "View3D > N-panel > Dot Importer",
     "description": "Detect circular black dots from an image, export centers to CSV, and create vertices at those positions.",
@@ -241,11 +241,13 @@ def pixels_to_blender_xy(x, y, w, h, unit_x, unit_y, origin_mode, flip_y):
 def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_mode,
                            flip_y, collection_name, max_points=0, spacing=10.0,
                            z_values=None, range_x=0.0, range_y=0.0,
-                           placement_spacing=0.0):
+                           placement_spacing=0.0, auto_adjust_max_points=False):
     centers = np.asarray(centers_px, dtype=np.float32)
     orig_count = centers.shape[0]
     unit_x, unit_y = compute_units_per_px(img_w, img_h, unit_per_px,
                                           range_x, range_y)
+    if auto_adjust_max_points and max_points > 0:
+        max_points = max(max_points, orig_count)
     if max_points > 0:
         if centers.shape[0] > max_points:
             centers = centers[:max_points]
@@ -490,6 +492,11 @@ class DPIProps(PropertyGroup):
         description="Maximum number of vertices to create (0 for unlimited). Missing points are placed outside the image bounds with uniform spacing.",
         default=500, min=0
     )
+    auto_adjust_max_points: BoolProperty(
+        name="Auto Expand Limit",
+        description="Automatically raise the vertex limit so the requested spacing is preserved",
+        default=True,
+    )
     height_map_path: StringProperty(
         name="Height Map",
         subtype='FILE_PATH',
@@ -530,6 +537,8 @@ class DPI_OT_detect_and_create(Operator):
             self.report({'ERROR'}, f"Failed to load image: {e}")
             return {'CANCELLED'}
 
+        sampling_limit = 0 if p.auto_adjust_max_points else p.max_points
+
         if p.conversion_mode == 'LINE':
             centers = Line2Dots.line_image_to_dots(
                 img_path,
@@ -537,7 +546,7 @@ class DPI_OT_detect_and_create(Operator):
                 blur_radius=p.blur_radius,
                 thresh_scale=p.thresh_scale,
                 junction_ratio=p.junction_ratio,
-                max_points=p.max_points,
+                max_points=sampling_limit,
                 resize_to=p.resize_to,
             )
         elif p.conversion_mode == 'SHAPE':
@@ -547,7 +556,7 @@ class DPI_OT_detect_and_create(Operator):
                 junction_ratio=p.junction_ratio,
                 fill_mode=p.fill_mode,
                 fill_ratio=p.fill_ratio,
-                max_points=p.max_points,
+                max_points=sampling_limit,
                 resize_to=p.resize_to,
                 detect_color_boundary=p.detect_color_boundary,
                 outline=p.outline,
@@ -561,7 +570,7 @@ class DPI_OT_detect_and_create(Operator):
                 blur_radius=p.blur_radius,
                 thresh_scale=p.thresh_scale,
                 junction_ratio=p.junction_ratio,
-                max_points=p.max_points,
+                max_points=sampling_limit,
                 resize_to=p.resize_to,
                 detect_color_boundary=p.detect_color_boundary,
                 outline=p.outline,
@@ -589,6 +598,10 @@ class DPI_OT_detect_and_create(Operator):
 
         colors = sample_colors(rgb, centers)
         detected_count = len(centers)
+        effective_max_points = p.max_points
+        if p.auto_adjust_max_points and p.max_points > 0 and detected_count > p.max_points:
+            effective_max_points = detected_count
+            p.max_points = detected_count
 
         z_vals = None
         hm_w = hm_h = 0
@@ -611,11 +624,12 @@ class DPI_OT_detect_and_create(Operator):
         obj, n, final_centers, verts = create_vertices_object(
             p.object_name, centers, w, h,
             p.unit_per_px, p.origin_mode, p.flip_y,
-            p.collection_name, p.max_points, p.spacing,
+            p.collection_name, effective_max_points, p.spacing,
             z_values=z_vals,
             range_x=p.output_range_x,
             range_y=p.output_range_y,
             placement_spacing=p.vertex_spacing,
+            auto_adjust_max_points=p.auto_adjust_max_points,
         )
 
         if z_vals is not None and len(verts) == hm_w * hm_h:
@@ -743,12 +757,16 @@ class DPI_OT_mesh_to_dots(Operator):
             return {'CANCELLED'}
 
         if p.max_points > 0 and len(pts) > p.max_points:
-            eff_spacing = spacing
-            while len(pts) > p.max_points:
-                eff_spacing *= len(pts) / p.max_points
-                pts = sample_mesh(eff_spacing)
-                if pts.size == 0:
-                    break
+            if p.auto_adjust_max_points:
+                if len(pts) > p.max_points:
+                    p.max_points = len(pts)
+            else:
+                eff_spacing = spacing
+                while len(pts) > p.max_points:
+                    eff_spacing *= len(pts) / p.max_points
+                    pts = sample_mesh(eff_spacing)
+                    if pts.size == 0:
+                        break
 
         create_points_object(p.object_name or "MeshDots", pts, p.collection_name)
         self.report({'INFO'}, f"Created {len(pts)} vertices from mesh")
@@ -822,6 +840,11 @@ class DPI_OT_path_to_dots(Operator):
             return {'CANCELLED'}
 
         pts = np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
+        if p.max_points > 0 and len(pts) > p.max_points:
+            if p.auto_adjust_max_points:
+                p.max_points = len(pts)
+            else:
+                pts = pts[:p.max_points]
         centers2d = [(p[0], p[1]) for p in pts]
         z_vals = [p[2] for p in pts]
         create_vertices_object(
@@ -835,6 +858,7 @@ class DPI_OT_path_to_dots(Operator):
             p.collection_name,
             spacing=p.spacing,
             z_values=z_vals,
+            auto_adjust_max_points=p.auto_adjust_max_points,
         )
         self.report({'INFO'}, f"Created {len(pts)} vertices from path")
         return {'FINISHED'}
@@ -889,6 +913,7 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "collection_name")
         box2.prop(p, "object_name")
         box2.prop(p, "max_points")
+        box2.prop(p, "auto_adjust_max_points")
 
         box3 = layout.box()
         box3.label(text="Height Map")
