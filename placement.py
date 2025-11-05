@@ -20,10 +20,16 @@ class PlacementRegion:
     polygon: Optional[List[Vector]]
     source_object: str
     requested_custom: bool
+    requested_mesh: bool
+    using_mesh: bool
 
     @property
     def using_custom(self) -> bool:
         return self.polygon is not None
+
+    @property
+    def using_mesh_region(self) -> bool:
+        return self.using_mesh
 
     @property
     def bounds(self) -> Tuple[float, float, float, float]:
@@ -64,19 +70,70 @@ def parse_custom_region(json_text: str) -> Tuple[Optional[List[Vector]], str]:
     return polygon, data.get("object", "")
 
 
+def convex_hull_2d(points: Sequence[Vector]) -> Optional[List[Vector]]:
+    """Return the 2D convex hull of ``points`` projected to the XY plane."""
+    unique = {(float(pt.x), float(pt.y)) for pt in points}
+    if len(unique) < 3:
+        return None
+
+    sorted_pts = sorted(unique)
+
+    def cross(o, a, b) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: List[Tuple[float, float]] = []
+    for p in sorted_pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0.0:
+            lower.pop()
+        lower.append(p)
+
+    upper: List[Tuple[float, float]] = []
+    for p in reversed(sorted_pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0.0:
+            upper.pop()
+        upper.append(p)
+
+    hull = lower[:-1] + upper[:-1]
+    if len(hull) < 3:
+        return None
+    return [Vector((x, y)) for x, y in hull]
+
+
 def create_region(
     coords: Sequence[Vector],
     spacing: float,
     use_custom_region: bool,
     custom_region_json: str,
+    mesh_polygon: Optional[Sequence[Vector]] = None,
+    mesh_source_object: str = "",
+    mesh_requested: bool = False,
 ) -> PlacementRegion:
-    if not coords:
+    coords = list(coords)
+    if not coords and not (mesh_requested and mesh_polygon):
         raise ValueError("Cannot create placement region without coordinates")
 
-    min_x = min(co.x for co in coords)
-    max_x = max(co.x for co in coords)
-    min_y = min(co.y for co in coords)
-    max_y = max(co.y for co in coords)
+    polygon: Optional[List[Vector]] = None
+    source_object = ""
+    using_mesh_polygon = bool(
+        mesh_requested and mesh_polygon and len(mesh_polygon) >= 3
+    )
+
+    if using_mesh_polygon:
+        polygon = [Vector((float(pt.x), float(pt.y))) for pt in mesh_polygon]
+        source_object = mesh_source_object
+        bounds_points: Sequence[Vector] = polygon
+    else:
+        if use_custom_region:
+            polygon, source_object = parse_custom_region(custom_region_json)
+        bounds_points = polygon if polygon else coords
+
+    if not bounds_points:
+        raise ValueError("Cannot create placement region without coordinates")
+
+    min_x = min(pt.x for pt in bounds_points)
+    max_x = max(pt.x for pt in bounds_points)
+    min_y = min(pt.y for pt in bounds_points)
+    max_y = max(pt.y for pt in bounds_points)
 
     padding = spacing if spacing > 0 else 0.1
     if max_x - min_x < 1e-6:
@@ -86,11 +143,6 @@ def create_region(
         min_y -= padding
         max_y += padding
 
-    polygon: Optional[List[Vector]] = None
-    source_object = ""
-    if use_custom_region:
-        polygon, source_object = parse_custom_region(custom_region_json)
-
     return PlacementRegion(
         min_x=min_x,
         max_x=max_x,
@@ -99,6 +151,8 @@ def create_region(
         polygon=polygon,
         source_object=source_object,
         requested_custom=use_custom_region,
+        requested_mesh=mesh_requested,
+        using_mesh=using_mesh_polygon,
     )
 
 

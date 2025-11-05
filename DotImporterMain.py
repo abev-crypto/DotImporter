@@ -12,7 +12,12 @@ import bpy
 import bmesh
 from bpy.types import Operator, Panel, PropertyGroup
 from bpy.props import (
-    StringProperty, BoolProperty, FloatProperty, IntProperty, EnumProperty
+    StringProperty,
+    BoolProperty,
+    FloatProperty,
+    IntProperty,
+    EnumProperty,
+    PointerProperty,
 )
 from pathlib import Path
 import csv
@@ -20,9 +25,11 @@ import json
 import numpy as np
 from PIL import Image, ImageDraw
 from mathutils import Vector
+from typing import List, Optional
 
 from placement import (
     build_kdtree,
+    convex_hull_2d,
     create_region,
     grid_assignments,
     randomize_assignments,
@@ -367,6 +374,41 @@ def create_points_object(name, points, collection_name):
     return obj
 
 
+def _mesh_region_object_poll(self, obj):
+    return obj is not None and obj.type == 'MESH'
+
+
+def build_mesh_region_polygon(
+    context,
+    target_obj: bpy.types.Object,
+    mesh_obj: bpy.types.Object,
+):
+    depsgraph = context.evaluated_depsgraph_get()
+    eval_obj = mesh_obj.evaluated_get(depsgraph)
+    mesh = eval_obj.to_mesh()
+    if mesh is None:
+        return None
+    try:
+        if not mesh.polygons:
+            return None
+        inv_matrix = target_obj.matrix_world.inverted()
+        world_matrix = eval_obj.matrix_world
+        points: List[Vector] = []
+        for poly in mesh.polygons:
+            if len(poly.vertices) < 3:
+                continue
+            for vid in poly.vertices:
+                co = mesh.vertices[vid].co
+                world_co = world_matrix @ co
+                local_co = inv_matrix @ world_co
+                points.append(Vector((local_co.x, local_co.y)))
+        if not points:
+            return None
+        return convex_hull_2d(points)
+    finally:
+        eval_obj.to_mesh_clear()
+
+
 # ---------- Properties ----------
 class DPIProps(PropertyGroup):
     image_path: StringProperty(
@@ -485,6 +527,17 @@ class DPIProps(PropertyGroup):
         name="Vertex Spacing [m]",
         description="Spacing between generated vertices in Blender units for sampling and placement (0 uses mode defaults)",
         default=0.0, min=0.0
+    )
+    randomize_use_mesh_region: BoolProperty(
+        name="Use Mesh Region",
+        description="Restrict placement to the area covered by another mesh object's faces",
+        default=False,
+    )
+    mesh_region_object: PointerProperty(
+        name="Region Mesh",
+        description="Planar mesh whose faces define the placement region when enabled",
+        type=bpy.types.Object,
+        poll=_mesh_region_object_poll,
     )
     randomize_use_custom_region: BoolProperty(
         name="Use Custom Region",
@@ -1037,14 +1090,33 @@ class DPI_OT_randomize_selected_vertices(Operator):
         static_coords = [v.co.copy() for v in bm.verts if not v.select]
         static_tree = build_kdtree(static_coords) if spacing > 0 else None
 
+        mesh_polygon = None
+        mesh_source = ""
+        mesh_warning: Optional[str] = None
+        if props.randomize_use_mesh_region:
+            mesh_obj = props.mesh_region_object
+            if mesh_obj and mesh_obj.type == 'MESH':
+                mesh_polygon = build_mesh_region_polygon(context, obj, mesh_obj)
+                mesh_source = mesh_obj.name
+                if mesh_polygon is None:
+                    mesh_warning = "Selected mesh does not define a planar region"
+            else:
+                mesh_warning = "Select a mesh object for the mesh region"
+
         region = create_region(
             all_coords,
             spacing,
             props.randomize_use_custom_region,
             props.custom_region_json,
+            mesh_polygon=mesh_polygon,
+            mesh_source_object=mesh_source,
+            mesh_requested=props.randomize_use_mesh_region,
         )
         if region.requested_custom and not region.using_custom and props.custom_region_json:
             self.report({'WARNING'}, "Stored custom region is invalid. Using bounding box instead.")
+        if region.requested_mesh and not region.using_mesh_region:
+            warn_msg = mesh_warning or "Mesh region is invalid. Using bounding box instead."
+            self.report({'WARNING'}, warn_msg)
 
         target_coords = [vert.co.copy() for vert in selected_verts]
         if props.placement_mode == 'GRID':
@@ -1079,7 +1151,10 @@ class DPI_OT_randomize_selected_vertices(Operator):
             obj.data.update()
             bm.free()
 
-        if region.using_custom and region.source_object and region.source_object != obj.name:
+        if region.using_mesh_region and region.source_object:
+            if region.source_object != obj.name:
+                self.report({'INFO'}, f"Mesh region from '{region.source_object}' applied to '{obj.name}'")
+        elif region.using_custom and region.source_object and region.source_object != obj.name:
             self.report({'INFO'}, f"Custom region captured from '{region.source_object}' applied to '{obj.name}'")
 
         if skipped and not moved:
@@ -1143,6 +1218,9 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "max_points")
         box2.prop(p, "bottom_reserve_ratio")
         box2.prop(p, "auto_adjust_max_points")
+        box2.prop(p, "randomize_use_mesh_region")
+        if p.randomize_use_mesh_region:
+            box2.prop(p, "mesh_region_object")
         box2.prop(p, "randomize_use_custom_region")
         row = box2.row(align=True)
         row.operator(DPI_OT_load_custom_region.bl_idname, icon='EYEDROPPER')
