@@ -38,6 +38,7 @@ from Convert.placement import (
 from Convert import Line2Dots, Shape2Dots, Mixed2Dots
 from Convert.utils import check_skimage, sample_edge, sample_curve
 from Convert.Shape2Dots import fill_shape
+from Convert.ProxyDrone import create_gn_sphere_proximity
 
 
 DEFAULT_MIN_AREA_PX = 20
@@ -632,6 +633,12 @@ class DPIProps(PropertyGroup):
         default=False,
         description="Export detected points with color to CSV",
     )
+    proxy_max_vertices: IntProperty(
+        name="Proxy Max Vertices",
+        description="Proxy Drone 用のジオメトリノードを適用する際に許容する最大頂点数 (0 は無制限)",
+        default=5000,
+        min=0,
+    )
 
 
 # ---------- Operator ----------
@@ -1173,6 +1180,39 @@ class DPI_OT_randomize_selected_vertices(Operator):
         return {'FINISHED'}
 
 
+class DPI_OT_create_proxy_drone(Operator):
+    bl_idname = "dpi.create_proxy_drone"
+    bl_label = "Create Proxy Drone GN"
+    bl_description = "Check active mesh vertex count and apply the Proxy Drone geometry nodes"
+
+    def execute(self, context):
+        props = context.scene.dpi_props
+        obj = context.view_layer.objects.active
+
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Active mesh object required")
+            return {'CANCELLED'}
+
+        vert_count = len(obj.data.vertices)
+        if vert_count == 0:
+            self.report({'ERROR'}, "Active mesh contains no vertices")
+            return {'CANCELLED'}
+
+        limit = props.proxy_max_vertices
+        if limit > 0 and vert_count > limit:
+            self.report({'ERROR'}, f"頂点数が多すぎます ({vert_count:,} > {limit:,})")
+            return {'CANCELLED'}
+
+        try:
+            modifier = create_gn_sphere_proximity(obj)
+        except Exception as exc:
+            self.report({'ERROR'}, f"Proxy Drone の作成に失敗しました: {exc}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Proxy Drone を '{obj.name}' に適用しました ({vert_count:,} verts)")
+        return {'FINISHED'}
+
+
 # ---------- UI Panel ----------
 class DPI_PT_panel(Panel):
     bl_label = "Dot Importer"
@@ -1248,6 +1288,16 @@ class DPI_PT_panel(Panel):
                 info += f" ({p.custom_region_object_name})"
             box4.label(text=f"Region: {info}")
 
+        box_proxy = layout.box()
+        box_proxy.label(text="Proxy Drone")
+        active_obj = context.view_layer.objects.active
+        if active_obj and active_obj.type == 'MESH':
+            box_proxy.label(text=f"Active Verts: {len(active_obj.data.vertices):,}")
+        else:
+            box_proxy.label(text="Active Verts: -")
+        box_proxy.prop(p, "proxy_max_vertices")
+        box_proxy.operator(DPI_OT_create_proxy_drone.bl_idname, icon='MESH_UVSPHERE')
+
 
 class DPI_PT_mesh_panel(Panel):
     bl_label = "Mesh to Dots"
@@ -1294,6 +1344,7 @@ classes = (
     DPI_OT_path_to_dots,
     DPI_OT_load_custom_region,
     DPI_OT_randomize_selected_vertices,
+    DPI_OT_create_proxy_drone,
     DPI_PT_panel,
     DPI_PT_mesh_panel,
     DPI_PT_path_panel,
