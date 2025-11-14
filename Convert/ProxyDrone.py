@@ -31,6 +31,23 @@ def get_or_create_emission_material(name, base_color, strength=5.0):
     return mat
 
 
+def _set_identifier_if_possible(socket, identifier):
+    if not identifier:
+        return
+
+    prop = None
+    if hasattr(socket, "bl_rna"):
+        prop = socket.bl_rna.properties.get("identifier")
+
+    if prop is not None and getattr(prop, "is_readonly", False):
+        return
+
+    try:
+        socket.identifier = identifier
+    except AttributeError:
+        pass
+
+
 def _ensure_interface_socket(interface, *, name, description, in_out, socket_type, default=None, identifier=None):
     socket = None
     for item in interface.items_tree:
@@ -44,11 +61,28 @@ def _ensure_interface_socket(interface, *, name, description, in_out, socket_typ
             in_out=in_out,
             socket_type=socket_type,
         )
-    if identifier:
-        socket.identifier = identifier
+    _set_identifier_if_possible(socket, identifier)
     if default is not None:
         socket.default_value = default
     return socket
+
+
+def _get_socket(collection, *, name=None, index=0):
+    if name:
+        try:
+            return collection[name]
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    try:
+        return collection[index]
+    except (KeyError, IndexError, TypeError):
+        pass
+
+    for item in collection:
+        return item
+
+    return None
 
 
 def _build_node_group(ng, *, sphere_radius, threshold, mat_default, mat_red):
@@ -170,9 +204,15 @@ def _build_node_group(ng, *, sphere_radius, threshold, mat_default, mat_red):
     links.new(sample_index.outputs["Value"], vec_math_dist.inputs[1])
 
     links.new(vec_math_dist.outputs["Value"], compare.inputs[0])
-    links.new(compare.outputs["Result"], bool_math.inputs[0])
+    compare_result_socket = _get_socket(compare.outputs, name="Result")
+    bool_input_socket = _get_socket(bool_math.inputs, index=0)
+    if compare_result_socket and bool_input_socket:
+        links.new(compare_result_socket, bool_input_socket)
 
-    links.new(bool_math.outputs["Result"], store_attr.inputs["Value"])
+    bool_result_socket = _get_socket(bool_math.outputs, name="Result")
+    store_value_socket = _get_socket(store_attr.inputs, name="Value", index=0)
+    if bool_result_socket and store_value_socket:
+        links.new(bool_result_socket, store_value_socket)
 
     links.new(store_attr.outputs["Geometry"], inst_on_points.inputs["Points"])
     links.new(uv_sphere.outputs["Mesh"], inst_on_points.inputs["Instance"])
