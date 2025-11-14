@@ -31,6 +31,23 @@ def get_or_create_emission_material(name, base_color, strength=5.0):
     return mat
 
 
+def _set_identifier_if_possible(socket, identifier):
+    if not identifier:
+        return
+
+    prop = None
+    if hasattr(socket, "bl_rna"):
+        prop = socket.bl_rna.properties.get("identifier")
+
+    if prop is not None and getattr(prop, "is_readonly", False):
+        return
+
+    try:
+        socket.identifier = identifier
+    except AttributeError:
+        pass
+
+
 def _ensure_interface_socket(interface, *, name, description, in_out, socket_type, default=None, identifier=None):
     socket = None
     for item in interface.items_tree:
@@ -44,8 +61,7 @@ def _ensure_interface_socket(interface, *, name, description, in_out, socket_typ
             in_out=in_out,
             socket_type=socket_type,
         )
-    if identifier:
-        socket.identifier = identifier
+    _set_identifier_if_possible(socket, identifier)
     if default is not None:
         socket.default_value = default
     return socket
