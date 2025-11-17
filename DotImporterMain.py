@@ -25,6 +25,7 @@ import json
 import numpy as np
 from PIL import Image, ImageDraw
 from mathutils import Vector
+from mathutils import geometry as mu_geometry
 from typing import List, Optional
 
 from Convert.placement import (
@@ -267,6 +268,46 @@ def compute_geometry_spacing(props) -> float:
     return DEFAULT_GEOMETRY_SPACING
 
 
+def build_delaunay_faces(verts):
+    if len(verts) < 3:
+        return []
+
+    coords2d = [Vector((v[0], v[1])) for v in verts]
+    try:
+        tri_verts, _, tri_faces = mu_geometry.delaunay_2d_cdt(
+            coords2d, [], [], 0
+        )
+    except Exception:
+        return []
+
+    index_map = {}
+    for idx, (x, y, _) in enumerate(verts):
+        key = (round(x, 6), round(y, 6))
+        index_map.setdefault(key, []).append(idx)
+
+    faces = []
+    for face in tri_faces:
+        if len(face) < 3:
+            continue
+        mapped = []
+        valid = True
+        for vid in face[:3]:
+            try:
+                co = tri_verts[vid]
+            except (IndexError, TypeError):
+                valid = False
+                break
+            key = (round(float(co.x), 6), round(float(co.y), 6))
+            idxs = index_map.get(key)
+            if not idxs:
+                valid = False
+                break
+            mapped.append(idxs[0])
+        if valid and len(set(mapped)) == 3:
+            faces.append(tuple(mapped))
+    return faces
+
+
 def pixels_to_blender_xy(x, y, w, h, unit_x, unit_y, origin_mode, flip_y):
     if origin_mode == "center":
         X = (x - w * 0.5) * unit_x
@@ -282,7 +323,8 @@ def pixels_to_blender_xy(x, y, w, h, unit_x, unit_y, origin_mode, flip_y):
 def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_mode,
                            flip_y, collection_name, max_points=0, spacing=10.0,
                            z_values=None, range_x=0.0, range_y=0.0,
-                           placement_spacing=0.0, auto_adjust_max_points=False):
+                           placement_spacing=0.0, auto_adjust_max_points=False,
+                           geometry_mode: str = 'POINTS'):
     centers = np.asarray(centers_px, dtype=np.float32)
     orig_count = centers.shape[0]
     unit_x, unit_y = compute_units_per_px(img_w, img_h, unit_per_px,
@@ -333,8 +375,14 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
             scale = 1.0 / denom
             verts = [(vx * scale, vy * scale, vz) for (vx, vy, vz) in verts]
 
+    faces = []
+    if geometry_mode == 'DELAUNAY':
+        # Only triangulate the vertices that were placed based on the image; ignore
+        # any extra padding vertices added to meet max_points.
+        faces = build_delaunay_faces(verts[:orig_count])
+
     mesh = bpy.data.meshes.new(name + "_Mesh")
-    mesh.from_pydata(verts, [], [])
+    mesh.from_pydata(verts, [], faces)
     mesh.update()
 
     obj = bpy.data.objects.new(name, mesh)
@@ -523,6 +571,15 @@ class DPIProps(PropertyGroup):
             "Aspect ratio is preserved and the result fits within the given X/Y."
         ),
         default=0.0, min=0.0
+    )
+    output_geometry: EnumProperty(
+        name="Output Geometry",
+        description="生成した頂点をそのまま使うか、delaunay_2d_cdt でメッシュ化するかを切り替えます",
+        items=[
+            ('POINTS', 'Vertices', '頂点のみを生成'),
+            ('DELAUNAY', 'Delaunay Mesh', 'mathutils.geometry.delaunay_2d_cdt で三角形メッシュを生成'),
+        ],
+        default='POINTS',
     )
     vertex_spacing: FloatProperty(
         name="Vertex Spacing [m]",
@@ -771,7 +828,11 @@ class DPI_OT_detect_and_create(Operator):
             range_y=p.output_range_y,
             placement_spacing=p.vertex_spacing,
             auto_adjust_max_points=p.auto_adjust_max_points,
+            geometry_mode=p.output_geometry,
         )
+
+        if p.output_geometry == 'DELAUNAY' and not obj.data.polygons:
+            self.report({'WARNING'}, "Delaunay triangulation could not create faces (need at least 3 planar points)")
 
         if z_vals is not None and len(verts) == hm_w * hm_h:
             mesh_obj = create_mesh_with_faces(verts, hm_w, hm_h)
@@ -1006,6 +1067,7 @@ class DPI_OT_path_to_dots(Operator):
             spacing=spacing,
             z_values=z_vals,
             auto_adjust_max_points=p.auto_adjust_max_points,
+            geometry_mode=p.output_geometry,
         )
         self.report({'INFO'}, f"Created {len(pts)} vertices from path")
         return {'FINISHED'}
@@ -1254,6 +1316,7 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "unit_per_px")
         box2.prop(p, "output_range_x")
         box2.prop(p, "output_range_y")
+        box2.prop(p, "output_geometry")
         box2.prop(p, "vertex_spacing")
         box2.prop(p, "origin_mode")
         box2.prop(p, "flip_y")
