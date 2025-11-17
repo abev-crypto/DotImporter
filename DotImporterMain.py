@@ -359,30 +359,43 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
                                       np.array(ys, dtype=np.float32)], axis=1)
             centers = np.vstack([centers, extra_centers])
 
-    verts = []
-    for i, (x, y) in enumerate(centers):
+    primary_centers = centers[:orig_count]
+    extra_centers = centers[orig_count:]
+
+    primary_verts = []
+    for i, (x, y) in enumerate(primary_centers):
         X, Y = pixels_to_blender_xy(x, y, img_w, img_h, unit_x, unit_y,
                                    origin_mode, flip_y)
         Z = float(z_values[i]) if z_values is not None and i < len(z_values) else 0.0
-        verts.append((X, Y, Z))
+        primary_verts.append((X, Y, Z))
+
+    extra_verts = []
+    if len(extra_centers) > 0:
+        start_idx = len(primary_verts)
+        for i, (x, y) in enumerate(extra_centers, start=start_idx):
+            X, Y = pixels_to_blender_xy(x, y, img_w, img_h, unit_x, unit_y,
+                                       origin_mode, flip_y)
+            Z = float(z_values[i]) if z_values is not None and i < len(z_values) else 0.0
+            extra_verts.append((X, Y, Z))
 
     # Normalize original vertices to fit within [-1, 1] when no explicit range is set
     if orig_count > 0 and range_x <= 0 and range_y <= 0:
-        arr = np.array(verts[:orig_count], dtype=np.float32)
+        arr = np.array(primary_verts, dtype=np.float32)
         max_abs = np.max(np.abs(arr[:, :2]), axis=0)
         denom = max(max_abs[0], max_abs[1])
         if denom > 0:
             scale = 1.0 / denom
-            verts = [(vx * scale, vy * scale, vz) for (vx, vy, vz) in verts]
+            primary_verts = [(vx * scale, vy * scale, vz) for (vx, vy, vz) in primary_verts]
+            extra_verts = [(vx * scale, vy * scale, vz) for (vx, vy, vz) in extra_verts]
 
     faces = []
     if geometry_mode == 'DELAUNAY':
         # Only triangulate the vertices that were placed based on the image; ignore
         # any extra padding vertices added to meet max_points.
-        faces = build_delaunay_faces(verts[:orig_count])
+        faces = build_delaunay_faces(primary_verts)
 
     mesh = bpy.data.meshes.new(name + "_Mesh")
-    mesh.from_pydata(verts, [], faces)
+    mesh.from_pydata(primary_verts, [], faces)
     mesh.update()
 
     obj = bpy.data.objects.new(name, mesh)
@@ -391,7 +404,16 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
         coll = bpy.data.collections.new(collection_name)
         bpy.context.scene.collection.children.link(coll)
     coll.objects.link(obj)
-    return obj, len(verts), centers, verts
+
+    if extra_verts:
+        extra_mesh = bpy.data.meshes.new(name + "_Extras_Mesh")
+        extra_mesh.from_pydata(extra_verts, [], [])
+        extra_mesh.update()
+        extra_obj = bpy.data.objects.new(name + "_Extras", extra_mesh)
+        coll.objects.link(extra_obj)
+
+    all_verts = primary_verts + extra_verts
+    return obj, len(all_verts), centers, all_verts, orig_count
 
 
 def create_mesh_with_faces(points, width, height):
@@ -710,16 +732,17 @@ class DPI_OT_detect_and_create(Operator):
             self.report({'ERROR'}, "Image not set")
             return {'CANCELLED'}
 
-        img_path = bpy.path.abspath(p.image_path)
+        img_path = Path(bpy.path.abspath(p.image_path))
         ok, msg = check_skimage()
         if not ok:
             self.report({'ERROR'}, msg or "scikit-image が見つかりません")
             return {'CANCELLED'}
         try:
-            gray, rgb, w, h = load_image_grayscale_np(img_path)
+            gray, rgb, w, h = load_image_grayscale_np(str(img_path))
         except Exception as e:
             self.report({'ERROR'}, f"Failed to load image: {e}")
             return {'CANCELLED'}
+        p.object_name = img_path.stem
 
         reserve_ratio = min(max(p.bottom_reserve_ratio, 0.0), 1.0)
         sampling_limit = 0
@@ -819,7 +842,7 @@ class DPI_OT_detect_and_create(Operator):
                 z_vals = None
 
         # Create points in Blender (may add extra vertices)
-        obj, n, final_centers, verts = create_vertices_object(
+        obj, n, final_centers, verts, primary_count = create_vertices_object(
             p.object_name, centers, w, h,
             p.unit_per_px, p.origin_mode, p.flip_y,
             p.collection_name, effective_max_points, pixel_spacing,
@@ -850,8 +873,13 @@ class DPI_OT_detect_and_create(Operator):
             extra = np.zeros((final_len - colors.shape[0], 3), dtype=np.uint8)
             colors = np.vstack([colors, extra])
 
+        colors_for_object = colors[:primary_count]
+        if colors_for_object.shape[0] < primary_count:
+            extra_main = np.zeros((primary_count - colors_for_object.shape[0], 3), dtype=np.uint8)
+            colors_for_object = np.vstack([colors_for_object, extra_main])
+
         # Key colors on object for other addons
-        apply_color_keys_action(obj, colors)
+        apply_color_keys_action(obj, colors_for_object)
 
         # Save CSV file
         csv_path = None
