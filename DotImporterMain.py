@@ -25,7 +25,6 @@ import json
 import numpy as np
 from PIL import Image, ImageDraw
 from mathutils import Vector
-from mathutils import geometry as mu_geometry
 from typing import List, Optional
 
 from Convert.placement import (
@@ -40,6 +39,7 @@ from Convert import Line2Dots, Shape2Dots, Mixed2Dots
 from Convert.utils import check_skimage, sample_edge, sample_curve
 from Convert.Shape2Dots import fill_shape
 from Convert.ProxyDrone import create_gn_sphere_proximity
+from Convert.Delaunay import delaunay_from_vertices
 
 
 DEFAULT_MIN_AREA_PX = 20
@@ -267,47 +267,6 @@ def compute_geometry_spacing(props) -> float:
         return props.vertex_spacing
     return DEFAULT_GEOMETRY_SPACING
 
-
-def build_delaunay_faces(verts):
-    if len(verts) < 3:
-        return []
-
-    coords2d = [Vector((v[0], v[1])) for v in verts]
-    try:
-        tri_verts, _, tri_faces = mu_geometry.delaunay_2d_cdt(
-            coords2d, [], [], 0
-        )
-    except Exception:
-        return []
-
-    index_map = {}
-    for idx, (x, y, _) in enumerate(verts):
-        key = (round(x, 6), round(y, 6))
-        index_map.setdefault(key, []).append(idx)
-
-    faces = []
-    for face in tri_faces:
-        if len(face) < 3:
-            continue
-        mapped = []
-        valid = True
-        for vid in face[:3]:
-            try:
-                co = tri_verts[vid]
-            except (IndexError, TypeError):
-                valid = False
-                break
-            key = (round(float(co.x), 6), round(float(co.y), 6))
-            idxs = index_map.get(key)
-            if not idxs:
-                valid = False
-                break
-            mapped.append(idxs[0])
-        if valid and len(set(mapped)) == 3:
-            faces.append(tuple(mapped))
-    return faces
-
-
 def pixels_to_blender_xy(x, y, w, h, unit_x, unit_y, origin_mode, flip_y):
     if origin_mode == "center":
         X = (x - w * 0.5) * unit_x
@@ -388,14 +347,8 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
             primary_verts = [(vx * scale, vy * scale, vz) for (vx, vy, vz) in primary_verts]
             extra_verts = [(vx * scale, vy * scale, vz) for (vx, vy, vz) in extra_verts]
 
-    faces = []
-    if geometry_mode == 'DELAUNAY':
-        # Only triangulate the vertices that were placed based on the image; ignore
-        # any extra padding vertices added to meet max_points.
-        faces = build_delaunay_faces(primary_verts)
-
     mesh = bpy.data.meshes.new(name + "_Mesh")
-    mesh.from_pydata(primary_verts, [], faces)
+    mesh.from_pydata(primary_verts, [], [])
     mesh.update()
 
     obj = bpy.data.objects.new(name, mesh)
@@ -443,6 +396,25 @@ def create_points_object(name, points, collection_name):
         bpy.context.scene.collection.children.link(coll)
     coll.objects.link(obj)
     return obj
+
+
+def apply_delaunay_if_requested(obj, geometry_mode: str, reporter=None):
+    """Run Delaunay triangulation when the geometry mode is set to DELAUNAY."""
+
+    if geometry_mode != 'DELAUNAY' or obj is None:
+        return None
+
+    new_obj, error = delaunay_from_vertices(obj)
+    if error:
+        if reporter:
+            reporter({'WARNING'}, error)
+        else:
+            print(error)
+        return None
+
+    if reporter:
+        reporter({'INFO'}, f"Delaunay メッシュ '{new_obj.name}' を作成しました")
+    return new_obj
 
 
 def _mesh_region_object_poll(self, obj):
@@ -857,6 +829,8 @@ class DPI_OT_detect_and_create(Operator):
         if p.output_geometry == 'DELAUNAY' and not obj.data.polygons:
             self.report({'WARNING'}, "Delaunay triangulation could not create faces (need at least 3 planar points)")
 
+        apply_delaunay_if_requested(obj, p.output_geometry, self.report)
+
         if z_vals is not None and len(verts) == hm_w * hm_h:
             mesh_obj = create_mesh_with_faces(verts, hm_w, hm_h)
             mesh_obj.name = p.object_name + "_Mesh"
@@ -1003,7 +977,8 @@ class DPI_OT_mesh_to_dots(Operator):
                 if len(pts) > effective_max_points:
                     pts = pts[:effective_max_points]
 
-        create_points_object(p.object_name or "MeshDots", pts, p.collection_name)
+        obj = create_points_object(p.object_name or "MeshDots", pts, p.collection_name)
+        apply_delaunay_if_requested(obj, p.output_geometry, self.report)
         self.report({'INFO'}, f"Created {len(pts)} vertices from mesh")
         return {'FINISHED'}
 
@@ -1083,7 +1058,7 @@ class DPI_OT_path_to_dots(Operator):
             pts = pts[:effective_max_points]
         centers2d = [(p[0], p[1]) for p in pts]
         z_vals = [p[2] for p in pts]
-        create_vertices_object(
+        obj, _, _, _, _ = create_vertices_object(
             p.object_name or "PathDots",
             centers2d,
             1.0,
@@ -1097,6 +1072,7 @@ class DPI_OT_path_to_dots(Operator):
             auto_adjust_max_points=p.auto_adjust_max_points,
             geometry_mode=p.output_geometry,
         )
+        apply_delaunay_if_requested(obj, p.output_geometry, self.report)
         self.report({'INFO'}, f"Created {len(pts)} vertices from path")
         return {'FINISHED'}
 
@@ -1303,6 +1279,24 @@ class DPI_OT_create_proxy_drone(Operator):
         return {'FINISHED'}
 
 
+class DPI_OT_run_delaunay(Operator):
+    bl_idname = "dpi.run_delaunay"
+    bl_label = "Run Delaunay"
+    bl_description = "アクティブなメッシュを Delaunay 三角形化します"
+
+    def execute(self, context):
+        obj = context.view_layer.objects.active
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Active mesh object required")
+            return {'CANCELLED'}
+
+        new_obj = apply_delaunay_if_requested(obj, 'DELAUNAY', self.report)
+        if new_obj is None:
+            return {'CANCELLED'}
+
+        return {'FINISHED'}
+
+
 # ---------- UI Panel ----------
 class DPI_PT_panel(Panel):
     bl_label = "Dot Importer"
@@ -1345,6 +1339,7 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "output_range_x")
         box2.prop(p, "output_range_y")
         box2.prop(p, "output_geometry")
+        box2.operator(DPI_OT_run_delaunay.bl_idname, icon='MESH_GRID')
         box2.prop(p, "vertex_spacing")
         box2.prop(p, "origin_mode")
         box2.prop(p, "flip_y")
@@ -1436,6 +1431,7 @@ classes = (
     DPI_OT_load_custom_region,
     DPI_OT_randomize_selected_vertices,
     DPI_OT_create_proxy_drone,
+    DPI_OT_run_delaunay,
     DPI_PT_panel,
     DPI_PT_mesh_panel,
     DPI_PT_path_panel,
