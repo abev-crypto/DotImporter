@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Dot Points Importer (CSV + Vertices)",
     "author": "ABEYUYA",
-    "version": (1, 3, 1),
+    "version": (1, 3, 2),
     "blender": (4, 3, 0),
     "location": "View3D > N-panel > Dot Importer",
     "description": "Detect circular black dots from an image, export centers to CSV, and create vertices at those positions.",
@@ -25,6 +25,7 @@ import json
 import numpy as np
 from PIL import Image, ImageDraw
 from mathutils import Vector
+from math import radians
 from typing import List, Optional
 
 from Convert.placement import (
@@ -279,11 +280,19 @@ def pixels_to_blender_xy(x, y, w, h, unit_x, unit_y, origin_mode, flip_y):
     return X, Y
 
 
+def apply_output_transform(obj: bpy.types.Object, rotation_x: float, offset_z: float):
+    if obj is None:
+        return
+    obj.rotation_euler = (rotation_x, 0.0, 0.0)
+    obj.location.z += offset_z
+
+
 def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_mode,
                            flip_y, collection_name, max_points=0, spacing=10.0,
                            z_values=None, range_x=0.0, range_y=0.0,
                            placement_spacing=0.0, auto_adjust_max_points=False,
-                           geometry_mode: str = 'POINTS'):
+                           geometry_mode: str = 'POINTS',
+                           rotation_x: float = 0.0, offset_z: float = 0.0):
     centers = np.asarray(centers_px, dtype=np.float32)
     orig_count = centers.shape[0]
     unit_x, unit_y = compute_units_per_px(img_w, img_h, unit_per_px,
@@ -357,6 +366,7 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
         coll = bpy.data.collections.new(collection_name)
         bpy.context.scene.collection.children.link(coll)
     coll.objects.link(obj)
+    apply_output_transform(obj, rotation_x, offset_z)
 
     if extra_verts:
         extra_mesh = bpy.data.meshes.new(name + "_Extras_Mesh")
@@ -364,12 +374,13 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
         extra_mesh.update()
         extra_obj = bpy.data.objects.new(name + "_Extras", extra_mesh)
         coll.objects.link(extra_obj)
+        apply_output_transform(extra_obj, rotation_x, offset_z)
 
     all_verts = primary_verts + extra_verts
     return obj, len(all_verts), centers, all_verts, orig_count
 
 
-def create_mesh_with_faces(points, width, height):
+def create_mesh_with_faces(points, width, height, rotation_x: float = 0.0, offset_z: float = 0.0):
     faces = []
     for y in range(height - 1):
         for x in range(width - 1):
@@ -380,10 +391,11 @@ def create_mesh_with_faces(points, width, height):
     mesh.from_pydata(points, [], faces)
     mesh.update()
     obj = bpy.data.objects.new("HeightMesh", mesh)
+    apply_output_transform(obj, rotation_x, offset_z)
     return obj
 
 
-def create_points_object(name, points, collection_name):
+def create_points_object(name, points, collection_name, rotation_x: float = 0.0, offset_z: float = 0.0):
     """Create a new mesh object consisting only of ``points``."""
     mesh = bpy.data.meshes.new(name + "_Mesh")
     mesh.from_pydata([tuple(p) for p in points], [], [])
@@ -395,6 +407,7 @@ def create_points_object(name, points, collection_name):
         coll = bpy.data.collections.new(collection_name)
         bpy.context.scene.collection.children.link(coll)
     coll.objects.link(obj)
+    apply_output_transform(obj, rotation_x, offset_z)
     return obj
 
 
@@ -565,6 +578,17 @@ class DPIProps(PropertyGroup):
             "Aspect ratio is preserved and the result fits within the given X/Y."
         ),
         default=0.0, min=0.0
+    )
+    output_rotation_x: FloatProperty(
+        name="Rotation X",
+        description="X-axis rotation applied to generated objects",
+        default=radians(90.0),
+        subtype='ANGLE',
+    )
+    output_offset_z: FloatProperty(
+        name="Offset Z [m]",
+        description="Z offset applied to generated objects",
+        default=0.0,
     )
     output_geometry: EnumProperty(
         name="Output Geometry",
@@ -824,6 +848,8 @@ class DPI_OT_detect_and_create(Operator):
             placement_spacing=p.vertex_spacing,
             auto_adjust_max_points=p.auto_adjust_max_points,
             geometry_mode=p.output_geometry,
+            rotation_x=p.output_rotation_x,
+            offset_z=p.output_offset_z,
         )
 
         if p.output_geometry == 'DELAUNAY' and not obj.data.polygons:
@@ -832,7 +858,11 @@ class DPI_OT_detect_and_create(Operator):
         apply_delaunay_if_requested(obj, p.output_geometry, self.report)
 
         if z_vals is not None and len(verts) == hm_w * hm_h:
-            mesh_obj = create_mesh_with_faces(verts, hm_w, hm_h)
+            mesh_obj = create_mesh_with_faces(
+                verts, hm_w, hm_h,
+                rotation_x=p.output_rotation_x,
+                offset_z=p.output_offset_z,
+            )
             mesh_obj.name = p.object_name + "_Mesh"
             coll = bpy.data.collections.get(p.collection_name)
             if not coll:
@@ -977,7 +1007,13 @@ class DPI_OT_mesh_to_dots(Operator):
                 if len(pts) > effective_max_points:
                     pts = pts[:effective_max_points]
 
-        obj = create_points_object(p.object_name or "MeshDots", pts, p.collection_name)
+        obj = create_points_object(
+            p.object_name or "MeshDots",
+            pts,
+            p.collection_name,
+            rotation_x=p.output_rotation_x,
+            offset_z=p.output_offset_z,
+        )
         apply_delaunay_if_requested(obj, p.output_geometry, self.report)
         self.report({'INFO'}, f"Created {len(pts)} vertices from mesh")
         return {'FINISHED'}
@@ -1071,6 +1107,8 @@ class DPI_OT_path_to_dots(Operator):
             z_values=z_vals,
             auto_adjust_max_points=p.auto_adjust_max_points,
             geometry_mode=p.output_geometry,
+            rotation_x=p.output_rotation_x,
+            offset_z=p.output_offset_z,
         )
         apply_delaunay_if_requested(obj, p.output_geometry, self.report)
         self.report({'INFO'}, f"Created {len(pts)} vertices from path")
@@ -1338,6 +1376,8 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "unit_per_px")
         box2.prop(p, "output_range_x")
         box2.prop(p, "output_range_y")
+        box2.prop(p, "output_rotation_x")
+        box2.prop(p, "output_offset_z")
         box2.prop(p, "output_geometry")
         box2.operator(DPI_OT_run_delaunay.bl_idname, icon='MESH_GRID')
         box2.prop(p, "vertex_spacing")
