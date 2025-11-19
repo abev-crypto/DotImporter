@@ -1,6 +1,9 @@
 import bpy
 
 
+NODE_GROUP_NAME = "GN_SphereProximity"
+
+
 def _setup_emission_material(mat, color, strength):
     """Ensure the given material emits the specified color."""
 
@@ -85,7 +88,16 @@ def _get_socket(collection, *, name=None, index=0):
     return None
 
 
-def _build_node_group(ng, *, sphere_radius, threshold, mat_default, mat_red):
+def _build_node_group(
+    ng,
+    *,
+    sphere_radius,
+    threshold,
+    mat_default,
+    mat_red,
+    torus_radius,
+    torus_minor_radius,
+):
     nodes = ng.nodes
     links = ng.links
     nodes.clear()
@@ -109,6 +121,15 @@ def _build_node_group(ng, *, sphere_radius, threshold, mat_default, mat_red):
         default=True,
         identifier="EnableDistanceCheck",
     )
+    torus_socket = _ensure_interface_socket(
+        iface,
+        name="Enable Torus Mesh",
+        description="Disable to hide the torus helper mesh",
+        in_out='INPUT',
+        socket_type='NodeSocketBool',
+        default=True,
+        identifier="EnableTorusMesh",
+    )
     geo_out_socket = _ensure_interface_socket(
         iface,
         name="Geometry",
@@ -123,6 +144,7 @@ def _build_node_group(ng, *, sphere_radius, threshold, mat_default, mat_red):
 
     geo_index = input_sockets.index(geo_socket)
     enable_index = input_sockets.index(enable_socket)
+    torus_index = input_sockets.index(torus_socket)
     geo_out_index = output_sockets.index(geo_out_socket)
 
     group_in = nodes.new("NodeGroupInput")
@@ -168,8 +190,30 @@ def _build_node_group(ng, *, sphere_radius, threshold, mat_default, mat_red):
     store_attr.inputs["Name"].default_value = "is_close"
 
     uv_sphere = nodes.new("GeometryNodeMeshUVSphere")
-    uv_sphere.location = (-800, 200)
+    uv_sphere.location = (-900, 200)
     uv_sphere.inputs["Radius"].default_value = sphere_radius
+    uv_sphere.inputs["Segments"].default_value = 24
+    uv_sphere.inputs["Rings"].default_value = 12
+
+    mesh_torus = nodes.new("GeometryNodeMeshTorus")
+    mesh_torus.location = (-900, 420)
+    mesh_torus.inputs["Major Radius"].default_value = torus_radius
+    mesh_torus.inputs["Minor Radius"].default_value = torus_minor_radius
+    mesh_torus.inputs["Major Segments"].default_value = 64
+    mesh_torus.inputs["Minor Segments"].default_value = 32
+
+    mesh_line = nodes.new("GeometryNodeMeshLine")
+    mesh_line.location = (-1100, 420)
+    mesh_line.inputs["Count"].default_value = 0
+
+    torus_switch = nodes.new("GeometryNodeSwitch")
+    torus_switch.location = (-700, 420)
+    torus_switch.input_type = 'GEOMETRY'
+
+    join_instances = nodes.new("GeometryNodeJoinGeometry")
+    join_instances.location = (-500, 300)
+    while len(join_instances.inputs) < 2:
+        join_instances.inputs.new('NodeSocketGeometry', "Geometry")
 
     inst_on_points = nodes.new("GeometryNodeInstanceOnPoints")
     inst_on_points.location = (-200, 200)
@@ -215,7 +259,14 @@ def _build_node_group(ng, *, sphere_radius, threshold, mat_default, mat_red):
         links.new(bool_result_socket, store_value_socket)
 
     links.new(store_attr.outputs["Geometry"], inst_on_points.inputs["Points"])
-    links.new(uv_sphere.outputs["Mesh"], inst_on_points.inputs["Instance"])
+
+    links.new(mesh_torus.outputs["Mesh"], torus_switch.inputs["True"])
+    links.new(mesh_line.outputs["Mesh"], torus_switch.inputs["False"])
+    links.new(group_in.outputs[torus_index], torus_switch.inputs["Switch"])
+
+    links.new(uv_sphere.outputs["Mesh"], join_instances.inputs[0])
+    links.new(torus_switch.outputs["Output"], join_instances.inputs[1])
+    links.new(join_instances.outputs["Geometry"], inst_on_points.inputs["Instance"])
     links.new(inst_on_points.outputs["Instances"], realize.inputs["Geometry"])
 
     links.new(realize.outputs["Geometry"], set_mat_default.inputs["Geometry"])
@@ -224,7 +275,10 @@ def _build_node_group(ng, *, sphere_radius, threshold, mat_default, mat_red):
 
     links.new(set_mat_red.outputs["Geometry"], group_out.inputs[geo_out_index])
 
-    return enable_socket
+    ng["distance_socket_identifier"] = getattr(enable_socket, "identifier", "")
+    ng["torus_socket_identifier"] = getattr(torus_socket, "identifier", "")
+
+    return enable_socket, torus_socket
 
 
 def create_gn_sphere_proximity(
@@ -232,9 +286,12 @@ def create_gn_sphere_proximity(
     *,
     sphere_radius=0.4,
     threshold=1.55,
-    group_name="GN_SphereProximity",
+    group_name=NODE_GROUP_NAME,
     enable_distance_check=None,
+    enable_torus=True,
     emission_strength=5.0,
+    torus_radius=0.78,
+    torus_minor_radius=0.08,
 ):
     """アクティブオブジェクトにGN_SphereProximityモディファイアを作成/適用"""
 
@@ -252,12 +309,14 @@ def create_gn_sphere_proximity(
     if ng is None:
         ng = bpy.data.node_groups.new(group_name, 'GeometryNodeTree')
 
-    enable_socket = _build_node_group(
+    enable_socket, torus_socket = _build_node_group(
         ng,
         sphere_radius=sphere_radius,
         threshold=threshold,
         mat_default=mat_default,
         mat_red=mat_red,
+        torus_radius=torus_radius,
+        torus_minor_radius=torus_minor_radius,
     )
 
     modifier = None
@@ -274,14 +333,40 @@ def create_gn_sphere_proximity(
 
     modifier.node_group = ng
 
-    if enable_distance_check is not None:
-        identifier = getattr(enable_socket, "identifier", "EnableDistanceCheck")
-        try:
-            modifier[identifier] = enable_distance_check
-        except Exception:
-            try:
-                modifier["Input_2"] = enable_distance_check
-            except Exception:
-                pass
+    set_proxy_modifier_flags(
+        modifier,
+        enable_distance=enable_distance_check,
+        enable_torus=enable_torus,
+    )
 
     return modifier
+
+
+def set_proxy_modifier_flags(modifier, *, enable_distance=None, enable_torus=None):
+    if modifier is None or modifier.type != 'NODES':
+        return
+    ng = modifier.node_group
+    if ng is None:
+        return
+
+    def _assign(identifier, fallback_keys, value):
+        if value is None:
+            return
+        if identifier:
+            try:
+                modifier[identifier] = value
+                return
+            except Exception:
+                pass
+        for key in fallback_keys:
+            try:
+                modifier[key] = value
+                return
+            except Exception:
+                continue
+
+    distance_id = ng.get("distance_socket_identifier") or "EnableDistanceCheck"
+    torus_id = ng.get("torus_socket_identifier") or "EnableTorusMesh"
+
+    _assign(distance_id, ("Input_2", "Socket_2"), enable_distance)
+    _assign(torus_id, ("Input_3", "Socket_3"), enable_torus)

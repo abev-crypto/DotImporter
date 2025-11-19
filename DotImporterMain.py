@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Dot Points Importer (CSV + Vertices)",
     "author": "ABEYUYA",
-    "version": (1, 3, 2),
+    "version": (1, 3, 3),
     "blender": (4, 3, 0),
     "location": "View3D > N-panel > Dot Importer",
     "description": "Detect circular black dots from an image, export centers to CSV, and create vertices at those positions.",
@@ -41,13 +41,58 @@ from Convert.placement import (
 from Convert import Line2Dots, Shape2Dots, Mixed2Dots
 from Convert.utils import check_skimage, sample_edge, sample_curve
 from Convert.Shape2Dots import fill_shape
-from Convert.ProxyDrone import create_gn_sphere_proximity
+from Convert.ProxyDrone import (
+    create_gn_sphere_proximity,
+    NODE_GROUP_NAME as PROXY_NODE_GROUP_NAME,
+    set_proxy_modifier_flags,
+)
 from Convert.Delaunay import delaunay_from_vertices
 from Convert.reflow_vertex import (
     MESH_OT_reflow_vertices,
     MESH_OT_repel_from_neighbors,
 )
 from Convert.follow_curve import setup_modifier_for_selection as follow_curve_setup
+
+
+DOT_IMPORTER_TAG = "_dot_importer_generated"
+
+
+def mark_dot_importer_object(obj):
+    if obj is not None:
+        obj[DOT_IMPORTER_TAG] = True
+
+
+def is_dot_importer_object(obj):
+    return bool(obj and obj.type == 'MESH' and obj.get(DOT_IMPORTER_TAG))
+
+
+def iter_dot_importer_meshes():
+    for obj in bpy.data.objects:
+        if is_dot_importer_object(obj):
+            yield obj
+
+
+def iter_proxy_modifiers():
+    for obj in iter_dot_importer_meshes():
+        for mod in obj.modifiers:
+            if mod.type == 'NODES' and mod.node_group and mod.node_group.name == PROXY_NODE_GROUP_NAME:
+                yield obj, mod
+
+
+def apply_proxy_settings_to_all(*, enable_distance=None, enable_torus=None):
+    count = 0
+    for _, mod in iter_proxy_modifiers():
+        set_proxy_modifier_flags(mod, enable_distance=enable_distance, enable_torus=enable_torus)
+        count += 1
+    return count
+
+
+def _update_proxy_distance(self, context):
+    apply_proxy_settings_to_all(enable_distance=self.proxy_enable_distance_check)
+
+
+def _update_proxy_torus(self, context):
+    apply_proxy_settings_to_all(enable_torus=self.proxy_enable_torus_mesh)
 
 
 DEFAULT_MIN_AREA_PX = 20
@@ -383,6 +428,7 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
         coll = bpy.data.collections.new(collection_name)
         bpy.context.scene.collection.children.link(coll)
     coll.objects.link(obj)
+    mark_dot_importer_object(obj)
     apply_output_transform(obj, rotation_x, offset_z)
 
     if extra_verts:
@@ -391,6 +437,7 @@ def create_vertices_object(name, centers_px, img_w, img_h, unit_per_px, origin_m
         extra_mesh.update()
         extra_obj = bpy.data.objects.new(name + "_Extras", extra_mesh)
         coll.objects.link(extra_obj)
+        mark_dot_importer_object(extra_obj)
         apply_output_transform(extra_obj, rotation_x, offset_z)
 
     all_verts = primary_verts + extra_verts
@@ -408,6 +455,7 @@ def create_mesh_with_faces(points, width, height, rotation_x: float = 0.0, offse
     mesh.from_pydata(points, [], faces)
     mesh.update()
     obj = bpy.data.objects.new("HeightMesh", mesh)
+    mark_dot_importer_object(obj)
     apply_output_transform(obj, rotation_x, offset_z)
     return obj
 
@@ -424,6 +472,7 @@ def create_points_object(name, points, collection_name, rotation_x: float = 0.0,
         coll = bpy.data.collections.new(collection_name)
         bpy.context.scene.collection.children.link(coll)
     coll.objects.link(obj)
+    mark_dot_importer_object(obj)
     apply_output_transform(obj, rotation_x, offset_z)
     return obj
 
@@ -580,6 +629,9 @@ def apply_delaunay_if_requested(obj, geometry_mode: str, reporter=None):
         else:
             print(error)
         return None
+
+    if new_obj is not None:
+        mark_dot_importer_object(new_obj)
 
     if reporter:
         reporter({'INFO'}, f"Delaunay メッシュ '{new_obj.name}' を作成しました")
@@ -880,11 +932,17 @@ class DPIProps(PropertyGroup):
         default=False,
         description="Export detected points with color to CSV",
     )
-    proxy_max_vertices: IntProperty(
-        name="Proxy Max Vertices",
-        description="Proxy Drone 用のジオメトリノードを適用する際に許容する最大頂点数 (0 は無制限)",
-        default=5000,
-        min=0,
+    proxy_enable_distance_check: BoolProperty(
+        name="Distance Check",
+        description="Proxy Drone GN で距離制限の判定を有効にする",
+        default=True,
+        update=_update_proxy_distance,
+    )
+    proxy_enable_torus_mesh: BoolProperty(
+        name="Torus Mesh",
+        description="Proxy Drone GN のトーラス補助メッシュを表示する",
+        default=True,
+        update=_update_proxy_torus,
     )
     reflow_flow_mode: EnumProperty(
         name="Flow Mode",
@@ -1241,99 +1299,130 @@ class DPI_OT_mesh_to_dots(Operator):
         return {'FINISHED'}
 
 
+def _curve_points_with_fill(curve_obj, spacing, fill_closed, fill_mode):
+    pts = sample_curve(curve_obj, spacing)
+    points = [np.array(pt, dtype=float) for pt in pts]
+
+    if not (fill_closed and any(s.use_cyclic_u for s in curve_obj.data.splines)):
+        return points
+
+    if len(points) < 3:
+        return points
+
+    origin = points[0]
+    tangent = points[1] - origin
+    tlen = float(np.linalg.norm(tangent))
+    if tlen == 0:
+        tangent = np.array([1.0, 0.0, 0.0])
+        tlen = 1.0
+    tangent /= tlen
+    normal = np.cross(tangent, points[2] - origin)
+    nlen = float(np.linalg.norm(normal))
+    if nlen == 0:
+        normal = np.array([0.0, 0.0, 1.0])
+        nlen = 1.0
+    normal /= nlen
+    bitangent = np.cross(normal, tangent)
+    blen = float(np.linalg.norm(bitangent))
+    if blen == 0:
+        bitangent = np.array([0.0, 1.0, 0.0])
+        blen = 1.0
+    bitangent /= blen
+    coords = []
+    for v in points:
+        p3 = v - origin
+        u = np.dot(p3, tangent)
+        v2 = np.dot(p3, bitangent)
+        coords.append((u, v2))
+    coords2d = np.array(coords)
+    min_uv = coords2d.min(axis=0)
+    coords_shift = coords2d - min_uv
+    max_uv = coords_shift.max(axis=0)
+    W = max(1, int(np.floor(max_uv[0] / spacing)) + 1)
+    H = max(1, int(np.floor(max_uv[1] / spacing)) + 1)
+    img = Image.new('1', (W, H), 0)
+    draw = ImageDraw.Draw(img)
+    poly_px = [((u) / spacing, (v) / spacing) for u, v in coords_shift]
+    draw.polygon(poly_px, fill=1)
+    mask = np.array(img, dtype=bool)
+    interior = fill_shape(mask, spacing=1.0, mode=fill_mode)
+    for x, y in interior:
+        u = x * spacing + min_uv[0]
+        v2 = y * spacing + min_uv[1]
+        world_pt = origin + tangent * u + bitangent * v2
+        points.append(world_pt)
+    return points
+
+
+def _split_points_for_limit(points_array, max_points):
+    if max_points <= 0:
+        return points_array, np.empty((0, 3), dtype=float)
+    if len(points_array) <= max_points:
+        return points_array, np.empty((0, 3), dtype=float)
+    return points_array[:max_points], points_array[max_points:]
+
+
 class DPI_OT_path_to_dots(Operator):
     bl_idname = "dpi.path_to_dots"
     bl_label = "Path to Dots"
-    bl_description = "Sample curve paths to generate dots"
+    bl_description = "Sample one or more curve paths to generate dots"
 
     def execute(self, context):
         p = context.scene.dpi_props
-        obj = context.active_object
-        if not obj or obj.type != 'CURVE':
-            self.report({'ERROR'}, "Active curve object required")
+        curves = [obj for obj in context.selected_objects if obj.type == 'CURVE']
+        if not curves:
+            active = context.active_object
+            if active and active.type == 'CURVE':
+                curves = [active]
+
+        if not curves:
+            self.report({'ERROR'}, "Select at least one curve object")
             return {'CANCELLED'}
 
         spacing = compute_geometry_spacing(p)
-        pts = sample_curve(obj, spacing)
-        points = [np.array(pt) for pt in pts]
+        total_created = 0
+        created_objects = []
 
-        if p.fill_closed and any(s.use_cyclic_u for s in obj.data.splines):
-            if len(points) >= 3:
-                origin = points[0]
-                tangent = points[1] - origin
-                tlen = float(np.linalg.norm(tangent))
-                if tlen == 0:
-                    tangent = np.array([1.0, 0.0, 0.0])
-                    tlen = 1.0
-                tangent /= tlen
-                normal = np.cross(tangent, points[2] - origin)
-                nlen = float(np.linalg.norm(normal))
-                if nlen == 0:
-                    normal = np.array([0.0, 0.0, 1.0])
-                    nlen = 1.0
-                normal /= nlen
-                bitangent = np.cross(normal, tangent)
-                blen = float(np.linalg.norm(bitangent))
-                if blen == 0:
-                    bitangent = np.array([0.0, 1.0, 0.0])
-                    blen = 1.0
-                bitangent /= blen
+        for curve in curves:
+            points = _curve_points_with_fill(curve, spacing, p.fill_closed, p.fill_mode)
+            if not points:
+                continue
 
-                coords = []
-                for v in points:
-                    p3 = v - origin
-                    u = np.dot(p3, tangent)
-                    v2 = np.dot(p3, bitangent)
-                    coords.append((u, v2))
-                coords2d = np.array(coords)
-                min_uv = coords2d.min(axis=0)
-                coords_shift = coords2d - min_uv
-                max_uv = coords_shift.max(axis=0)
-                W = max(1, int(np.floor(max_uv[0] / spacing)) + 1)
-                H = max(1, int(np.floor(max_uv[1] / spacing)) + 1)
-                img = Image.new('1', (W, H), 0)
-                draw = ImageDraw.Draw(img)
-                poly_px = [((u) / spacing, (v) / spacing) for u, v in coords_shift]
-                draw.polygon(poly_px, fill=1)
-                mask = np.array(img, dtype=bool)
-                interior = fill_shape(mask, spacing=1.0, mode=p.fill_mode)
-                for x, y in interior:
-                    u = x * spacing + min_uv[0]
-                    v2 = y * spacing + min_uv[1]
-                    world_pt = origin + tangent * u + bitangent * v2
-                    points.append(world_pt)
+            pts = np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
+            main_pts, extra_pts = _split_points_for_limit(pts, p.max_points)
 
-        if not points:
-            self.report({'WARNING'}, "No points generated")
+            if len(main_pts) == 0 and len(extra_pts) == 0:
+                continue
+
+            base_name = f"{p.object_name or 'PathDots'}_{curve.name}"
+            main_obj = None
+            if len(main_pts) > 0:
+                main_obj = create_points_object(
+                    base_name,
+                    main_pts,
+                    p.collection_name,
+                    rotation_x=p.output_rotation_x,
+                    offset_z=p.output_offset_z,
+                )
+                apply_delaunay_if_requested(main_obj, p.output_geometry, self.report)
+                total_created += len(main_pts)
+                created_objects.append(main_obj.name)
+
+            if len(extra_pts) > 0:
+                create_points_object(
+                    base_name + "_Extras",
+                    extra_pts,
+                    p.collection_name,
+                    rotation_x=p.output_rotation_x,
+                    offset_z=p.output_offset_z,
+                )
+
+        if total_created == 0:
+            self.report({'WARNING'}, "No points generated from the selected curves")
             return {'CANCELLED'}
 
-        pts = np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
-        effective_max_points = p.max_points
-        if p.auto_adjust_max_points and p.max_points > 0 and len(pts) > p.max_points:
-            effective_max_points = len(pts)
-
-        if effective_max_points > 0 and len(pts) > effective_max_points:
-            pts = pts[:effective_max_points]
-        centers2d = [(p[0], p[1]) for p in pts]
-        z_vals = [p[2] for p in pts]
-        obj, _, _, _, _ = create_vertices_object(
-            p.object_name or "PathDots",
-            centers2d,
-            1.0,
-            1.0,
-            1.0,
-            'topleft',
-            False,
-            p.collection_name,
-            spacing=spacing,
-            z_values=z_vals,
-            auto_adjust_max_points=p.auto_adjust_max_points,
-            geometry_mode=p.output_geometry,
-            rotation_x=p.output_rotation_x,
-            offset_z=p.output_offset_z,
-        )
-        apply_delaunay_if_requested(obj, p.output_geometry, self.report)
-        self.report({'INFO'}, f"Created {len(pts)} vertices from path")
+        info = ", ".join(created_objects)
+        self.report({'INFO'}, f"Created {total_created} vertices from curves ({info})")
         return {'FINISHED'}
 
 
@@ -1662,33 +1751,59 @@ class DPI_OT_setup_follow_curve(Operator):
 class DPI_OT_create_proxy_drone(Operator):
     bl_idname = "dpi.create_proxy_drone"
     bl_label = "Create Proxy Drone GN"
-    bl_description = "Check active mesh vertex count and apply the Proxy Drone geometry nodes"
+    bl_description = "Apply or update the Proxy Drone geometry nodes on every Dot Importer mesh"
 
     def execute(self, context):
         props = context.scene.dpi_props
-        obj = context.view_layer.objects.active
-
-        if not obj or obj.type != 'MESH':
-            self.report({'ERROR'}, "Active mesh object required")
+        targets = [obj for obj in iter_dot_importer_meshes()]
+        if not targets:
+            self.report({'WARNING'}, "Dot Importer 生成メッシュが見つかりません")
             return {'CANCELLED'}
 
-        vert_count = len(obj.data.vertices)
-        if vert_count == 0:
-            self.report({'ERROR'}, "Active mesh contains no vertices")
+        applied = 0
+        errors = 0
+        for obj in targets:
+            if obj.data is None or len(obj.data.vertices) == 0:
+                continue
+            try:
+                modifier = create_gn_sphere_proximity(
+                    obj,
+                    enable_distance_check=props.proxy_enable_distance_check,
+                    enable_torus=props.proxy_enable_torus_mesh,
+                )
+                if modifier:
+                    applied += 1
+            except Exception as exc:
+                errors += 1
+                self.report({'WARNING'}, f"{obj.name}: {exc}")
+
+        if applied == 0:
+            self.report({'ERROR'}, "Proxy Drone GN を適用できませんでした")
             return {'CANCELLED'}
 
-        limit = props.proxy_max_vertices
-        if limit > 0 and vert_count > limit:
-            self.report({'ERROR'}, f"頂点数が多すぎます ({vert_count:,} > {limit:,})")
+        msg = f"{applied} object(s) updated"
+        if errors:
+            msg += f", {errors} failed"
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+
+class DPI_OT_remove_proxy_drone(Operator):
+    bl_idname = "dpi.remove_proxy_drone"
+    bl_label = "Remove Proxy Drone GN"
+    bl_description = "Remove the Proxy Drone geometry nodes from all Dot Importer meshes"
+
+    def execute(self, context):
+        removed = 0
+        for obj, mod in list(iter_proxy_modifiers()):
+            obj.modifiers.remove(mod)
+            removed += 1
+
+        if removed == 0:
+            self.report({'WARNING'}, "Proxy Drone GN は見つかりませんでした")
             return {'CANCELLED'}
 
-        try:
-            modifier = create_gn_sphere_proximity(obj)
-        except Exception as exc:
-            self.report({'ERROR'}, f"Proxy Drone の作成に失敗しました: {exc}")
-            return {'CANCELLED'}
-
-        self.report({'INFO'}, f"Proxy Drone を '{obj.name}' に適用しました ({vert_count:,} verts)")
+        self.report({'INFO'}, f"Removed Proxy Drone GN from {removed} modifier(s)")
         return {'FINISHED'}
 
 
@@ -1847,8 +1962,14 @@ class DPI_PT_panel(Panel):
             box_proxy.label(text=f"Active Verts: {len(active_obj.data.vertices):,}")
         else:
             box_proxy.label(text="Active Verts: -")
-        box_proxy.prop(p, "proxy_max_vertices")
-        box_proxy.operator(DPI_OT_create_proxy_drone.bl_idname, icon='MESH_UVSPHERE')
+        tracked = sum(1 for _ in iter_dot_importer_meshes())
+        box_proxy.label(text=f"Tracked Meshes: {tracked}")
+        row = box_proxy.row(align=True)
+        row.prop(p, "proxy_enable_distance_check", toggle=True)
+        row.prop(p, "proxy_enable_torus_mesh", toggle=True)
+        row_buttons = box_proxy.row(align=True)
+        row_buttons.operator(DPI_OT_create_proxy_drone.bl_idname, text="Apply GN", icon='MESH_UVSPHERE')
+        row_buttons.operator(DPI_OT_remove_proxy_drone.bl_idname, text="Remove GN", icon='TRASH')
 
 
 class DPI_PT_mesh_panel(Panel):
@@ -1902,6 +2023,7 @@ classes = (
     MESH_OT_reflow_vertices,
     MESH_OT_repel_from_neighbors,
     DPI_OT_create_proxy_drone,
+    DPI_OT_remove_proxy_drone,
     DPI_OT_run_delaunay,
     DPI_PT_panel,
     DPI_PT_mesh_panel,
