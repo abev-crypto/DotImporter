@@ -43,6 +43,11 @@ from Convert.utils import check_skimage, sample_edge, sample_curve
 from Convert.Shape2Dots import fill_shape
 from Convert.ProxyDrone import create_gn_sphere_proximity
 from Convert.Delaunay import delaunay_from_vertices
+from Convert.reflow_vertex import (
+    MESH_OT_reflow_vertices,
+    MESH_OT_repel_from_neighbors,
+)
+from Convert.follow_curve import setup_modifier_for_selection as follow_curve_setup
 
 
 DEFAULT_MIN_AREA_PX = 20
@@ -1572,6 +1577,28 @@ class DPI_OT_vertex_reflow(Operator):
         return {'FINISHED'}
 
 
+class DPI_OT_setup_follow_curve(Operator):
+    bl_idname = "dpi.setup_follow_curve"
+    bl_label = "Setup Follow Curve"
+    bl_description = (
+        "Create or update the Follow Curve Geometry Nodes modifier on the selected mesh "
+        "using the selected curve object"
+    )
+
+    def execute(self, context):
+        try:
+            follow_curve_setup()
+        except RuntimeError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        except Exception as exc:  # pragma: no cover - Blender context specific
+            self.report({'ERROR'}, f"Failed to set up Follow Curve: {exc}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, "Follow Curve modifier configured")
+        return {'FINISHED'}
+
+
 class DPI_OT_create_proxy_drone(Operator):
     bl_idname = "dpi.create_proxy_drone"
     bl_label = "Create Proxy Drone GN"
@@ -1712,6 +1739,13 @@ class DPI_PT_panel(Panel):
         box4.prop(p, "reflow_curve_object")
 
         box4.separator()
+        box4.label(text="Advanced Reflow Tools")
+        row = box4.row(align=True)
+        row.operator(MESH_OT_reflow_vertices.bl_idname, text="Spline / Linear", icon='IPO_LINEAR')
+        row.operator(MESH_OT_repel_from_neighbors.bl_idname, text="Repel", icon='FORCE_CHARGE')
+        box4.operator(DPI_OT_setup_follow_curve.bl_idname, icon='CURVE_PATH')
+
+        box4.separator()
         box4.label(text="Grid Generator")
         box4.prop(p, "grid_vertex_count")
         box4.operator(DPI_OT_create_grid_vertices.bl_idname, icon='MESH_GRID')
@@ -1774,6 +1808,9 @@ classes = (
     DPI_OT_randomize_selected_vertices,
     DPI_OT_create_grid_vertices,
     DPI_OT_vertex_reflow,
+    DPI_OT_setup_follow_curve,
+    MESH_OT_reflow_vertices,
+    MESH_OT_repel_from_neighbors,
     DPI_OT_create_proxy_drone,
     DPI_OT_run_delaunay,
     DPI_PT_panel,
