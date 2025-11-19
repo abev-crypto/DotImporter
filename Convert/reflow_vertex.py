@@ -173,7 +173,7 @@ class MESH_OT_reflow_vertices(bpy.types.Operator):
         layout.prop(self, "axis_limit")
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
+        return self.execute(context)
 
     def execute(self, context):
         obj = context.object
@@ -289,14 +289,7 @@ class MESH_OT_repel_from_neighbors(bpy.types.Operator):
         layout.prop(self, "axis_limit")
 
     def invoke(self, context, event):
-        # Prefill from Skybrush safety threshold if present
-        try:
-            t = context.scene.skybrush.safety_check.proximity_warning_threshold
-            if t and t > 0:
-                self.min_distance = float(t)
-        except Exception:
-            pass
-        return context.window_manager.invoke_props_dialog(self)
+        return self.execute(context)
 
     def execute(self, context):
         obj = context.object
@@ -312,7 +305,12 @@ class MESH_OT_repel_from_neighbors(bpy.types.Operator):
         if not others:
             self.report({'INFO'}, "No unselected vertices to repel from")
             return {'CANCELLED'}
+        props = getattr(context.scene, "dpi_props", None)
         min_d = max(self.min_distance, 0.0)
+        if props is not None:
+            scene_spacing = max(float(getattr(props, "vertex_spacing", 0.0)), 0.0)
+            if scene_spacing > 0.0:
+                min_d = scene_spacing
         for _ in range(self.iterations):
             disps = {v: Vector((0.0, 0.0, 0.0)) for v in selected}
             for v in selected:
