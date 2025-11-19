@@ -54,6 +54,16 @@ DEFAULT_MIN_AREA_PX = 20
 DEFAULT_PIXEL_SPACING = 10.0
 DEFAULT_GEOMETRY_SPACING = 1.0
 
+AXIS_LIMIT_ITEMS = [
+    ("XYZ", "XYZ", ""),
+    ("XY", "XY", ""),
+    ("XZ", "XZ", ""),
+    ("YZ", "YZ", ""),
+    ("X", "X", ""),
+    ("Y", "Y", ""),
+    ("Z", "Z", ""),
+]
+
 
 # ---------- Utility: image -> grayscale & RGB (numpy) ----------
 def load_image_grayscale_np(img_path: str):
@@ -875,6 +885,56 @@ class DPIProps(PropertyGroup):
         description="Proxy Drone 用のジオメトリノードを適用する際に許容する最大頂点数 (0 は無制限)",
         default=5000,
         min=0,
+    )
+    reflow_flow_mode: EnumProperty(
+        name="Flow Mode",
+        description="Advanced reflow mode (spline / linear / repulsion)",
+        items=[
+            ('LINEAR', "Linear", "折れ線→等間隔"),
+            ('SPLINE', "Spline", "スプライン→等間隔"),
+            ('REPULSION', "Repulsion", "最小距離を保つ反発"),
+        ],
+        default='SPLINE',
+    )
+    reflow_endpoint_mode: EnumProperty(
+        name="Endpoints",
+        description="どのように端点を決定するか",
+        items=[
+            ('EDGE_PATH', "Edge Path", "選択辺の端(次数1)を端点に"),
+            ('AUTO_FARTHEST', "Auto Farthest", "最遠ペア"),
+            ('ACTIVE_FARTHEST', "Active → Farthest", "アクティブから最遠"),
+        ],
+        default='EDGE_PATH',
+    )
+    reflow_axis_limit: EnumProperty(
+        name="Axis Limit",
+        description="移動方向の制限",
+        items=AXIS_LIMIT_ITEMS,
+        default='XY',
+    )
+    reflow_repulsion_min_distance: FloatProperty(
+        name="Repulsion Distance",
+        description="Repulsion フロー時に維持する最小距離",
+        default=0.1,
+        min=0.0,
+    )
+    reflow_repulsion_iterations: IntProperty(
+        name="Repulsion Iterations",
+        description="Repulsion フローの繰り返し回数",
+        default=10,
+        min=1,
+    )
+    repel_iterations: IntProperty(
+        name="Repel Iterations",
+        description="Repel From Neighbors を繰り返す回数",
+        default=10,
+        min=1,
+    )
+    repel_axis_limit: EnumProperty(
+        name="Repel Axis Limit",
+        description="Repel From Neighbors の移動軸制限",
+        items=AXIS_LIMIT_ITEMS,
+        default='XY',
     )
 
 
@@ -1740,9 +1800,39 @@ class DPI_PT_panel(Panel):
 
         box4.separator()
         box4.label(text="Advanced Reflow Tools")
+        col_adv = box4.column(align=True)
+        col_adv.prop(p, "reflow_flow_mode")
+        col_adv.prop(p, "reflow_endpoint_mode")
+        if p.reflow_flow_mode == 'REPULSION':
+            col_adv.prop(p, "reflow_repulsion_min_distance")
+            col_adv.prop(p, "reflow_repulsion_iterations")
+        col_adv.prop(p, "reflow_axis_limit")
         row = box4.row(align=True)
-        row.operator(MESH_OT_reflow_vertices.bl_idname, text="Spline / Linear", icon='IPO_LINEAR')
-        row.operator(MESH_OT_repel_from_neighbors.bl_idname, text="Repel", icon='FORCE_CHARGE')
+        op_reflow = row.operator(
+            MESH_OT_reflow_vertices.bl_idname,
+            text="Spline / Linear",
+            icon='IPO_LINEAR',
+        )
+        op_reflow.flow_mode = p.reflow_flow_mode
+        op_reflow.endpoint_mode = p.reflow_endpoint_mode
+        op_reflow.axis_limit = p.reflow_axis_limit
+        op_reflow.min_distance = p.reflow_repulsion_min_distance
+        op_reflow.iterations = p.reflow_repulsion_iterations
+
+        box4.label(text="Repel From Neighbors")
+        repel_dist = max(p.vertex_spacing, 0.0)
+        box4.label(text=f"Distance: {repel_dist:.4g} (from Vertex Spacing)")
+        box4.prop(p, "repel_iterations")
+        box4.prop(p, "repel_axis_limit")
+        row = box4.row(align=True)
+        op_repel = row.operator(
+            MESH_OT_repel_from_neighbors.bl_idname,
+            text="Repel",
+            icon='FORCE_CHARGE',
+        )
+        op_repel.min_distance = repel_dist
+        op_repel.iterations = p.repel_iterations
+        op_repel.axis_limit = p.repel_axis_limit
         box4.operator(DPI_OT_setup_follow_curve.bl_idname, icon='CURVE_PATH')
 
         box4.separator()
