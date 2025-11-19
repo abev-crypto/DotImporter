@@ -8,6 +8,8 @@ bl_info = {
     "category": "Import-Export",
 }
 
+import bisect
+import math
 import bpy
 import bmesh
 from bpy.types import Operator, Panel, PropertyGroup
@@ -411,6 +413,145 @@ def create_points_object(name, points, collection_name, rotation_x: float = 0.0,
     return obj
 
 
+def generate_grid_points(count: int, spacing: float) -> List[Vector]:
+    """Create an evenly spaced grid with ``count`` points."""
+
+    if count <= 0:
+        return []
+
+    if spacing <= 0:
+        spacing = DEFAULT_GEOMETRY_SPACING
+
+    cols = max(1, int(math.ceil(math.sqrt(count))))
+    rows = max(1, int(math.ceil(count / cols)))
+
+    half_w = 0.5 * (cols - 1) * spacing
+    half_h = 0.5 * (rows - 1) * spacing
+
+    points: List[Vector] = []
+    for row in range(rows):
+        y = -half_h + row * spacing
+        for col in range(cols):
+            if len(points) >= count:
+                break
+            x = -half_w + col * spacing
+            points.append(Vector((x, y, 0.0)))
+        if len(points) >= count:
+            break
+
+    return points
+
+
+def _sorted_indices_by_axis(coords: List[Vector]) -> List[int]:
+    if not coords:
+        return []
+    spans = []
+    for axis in range(3):
+        values = [co[axis] for co in coords]
+        spans.append(max(values) - min(values))
+    axis = spans.index(max(spans)) if spans else 0
+    return sorted(range(len(coords)), key=lambda idx: coords[idx][axis])
+
+
+def _farthest_pair(coords: List[Vector]) -> Optional[tuple[Vector, Vector]]:
+    if len(coords) < 2:
+        return None
+    best_pair = (coords[0], coords[1])
+    max_dist = (coords[0] - coords[1]).length
+    for i, a in enumerate(coords):
+        for b in coords[i + 1:]:
+            dist = (a - b).length
+            if dist > max_dist:
+                max_dist = dist
+                best_pair = (a, b)
+    return best_pair
+
+
+def _sample_line_points(start: Vector, end: Vector, count: int) -> List[Vector]:
+    if count <= 0:
+        return []
+    if count == 1:
+        return [start.copy()]
+    direction = end - start
+    if direction.length == 0:
+        return [start.copy() for _ in range(count)]
+    return [start + direction * (i / (count - 1)) for i in range(count)]
+
+
+def _ordered_polyline_from_curve(curve_obj: bpy.types.Object, depsgraph) -> List[Vector]:
+    curve_eval = curve_obj.evaluated_get(depsgraph)
+    mesh = curve_eval.to_mesh(preserve_all_data_layers=False)
+    if mesh is None:
+        return []
+
+    try:
+        if not mesh.vertices:
+            return []
+
+        adjacency = {i: [] for i in range(len(mesh.vertices))}
+        for edge in mesh.edges:
+            v0, v1 = edge.vertices
+            adjacency[v0].append(v1)
+            adjacency[v1].append(v0)
+
+        start = next((idx for idx, nbrs in adjacency.items() if len(nbrs) == 1), 0)
+        visited = set()
+        order: List[int] = []
+        prev = -1
+        current = start
+        for _ in range(len(mesh.vertices)):
+            if current in visited:
+                break
+            visited.add(current)
+            order.append(current)
+            neighbors = adjacency.get(current, [])
+            candidates = [n for n in neighbors if n != prev]
+            if not candidates:
+                if not neighbors:
+                    break
+                candidates = neighbors[:1]
+            prev = current
+            current = candidates[0]
+
+        matrix = curve_eval.matrix_world.copy()
+        return [matrix @ mesh.vertices[idx].co for idx in order]
+    finally:
+        curve_eval.to_mesh_clear()
+
+
+def _sample_along_polyline(points: List[Vector], count: int) -> List[Vector]:
+    if count <= 0 or not points:
+        return []
+    if count == 1:
+        return [points[0].copy()]
+    if len(points) == 1:
+        return [points[0].copy() for _ in range(count)]
+
+    cumulative = [0.0]
+    total = 0.0
+    for i in range(1, len(points)):
+        seg_len = (points[i] - points[i - 1]).length
+        total += seg_len
+        cumulative.append(total)
+    if total <= 1e-8:
+        return [points[0].copy() for _ in range(count)]
+
+    result: List[Vector] = []
+    for i in range(count):
+        target = total * (i / (count - 1)) if count > 1 else 0.0
+        idx = bisect.bisect_right(cumulative, target) - 1
+        idx = max(0, min(idx, len(points) - 2))
+        seg_start = cumulative[idx]
+        seg_end = cumulative[idx + 1]
+        denom = seg_end - seg_start
+        if denom <= 1e-8:
+            result.append(points[idx].copy())
+        else:
+            t = (target - seg_start) / denom
+            result.append(points[idx].lerp(points[idx + 1], t))
+    return result
+
+
 def apply_delaunay_if_requested(obj, geometry_mode: str, reporter=None):
     """Run Delaunay triangulation when the geometry mode is set to DELAUNAY."""
 
@@ -432,6 +573,10 @@ def apply_delaunay_if_requested(obj, geometry_mode: str, reporter=None):
 
 def _mesh_region_object_poll(self, obj):
     return obj is not None and obj.type == 'MESH'
+
+
+def _curve_object_poll(self, obj):
+    return obj is not None and obj.type == 'CURVE'
 
 
 def build_mesh_region_polygon(
@@ -652,6 +797,18 @@ class DPIProps(PropertyGroup):
         default=0,
         min=0,
         options={'HIDDEN'},
+    )
+    grid_vertex_count: IntProperty(
+        name="Grid Vertex Count",
+        description="Number of vertices to create when generating a standalone grid mesh",
+        default=100,
+        min=0,
+    )
+    reflow_curve_object: PointerProperty(
+        name="Follow Curve",
+        description="Curve object used when applying Vertex Reflow in follow-curve mode",
+        type=bpy.types.Object,
+        poll=_curve_object_poll,
     )
     origin_mode: EnumProperty(
         name="Origin",
@@ -1284,6 +1441,137 @@ class DPI_OT_randomize_selected_vertices(Operator):
         return {'FINISHED'}
 
 
+class DPI_OT_create_grid_vertices(Operator):
+    bl_idname = "dpi.create_grid_vertices"
+    bl_label = "Create Grid Mesh"
+    bl_description = "Create a standalone grid mesh that contains the requested number of vertices"
+
+    def execute(self, context):
+        props = context.scene.dpi_props
+        count = max(0, props.grid_vertex_count)
+        if count <= 0:
+            self.report({'WARNING'}, "Grid Vertex Count must be greater than zero")
+            return {'CANCELLED'}
+
+        spacing = compute_geometry_spacing(props)
+        points = generate_grid_points(count, spacing)
+        if not points:
+            self.report({'WARNING'}, "Failed to create grid points")
+            return {'CANCELLED'}
+
+        name = props.object_name or "GridPoints"
+        obj = create_points_object(
+            name,
+            points,
+            props.collection_name,
+            rotation_x=props.output_rotation_x,
+            offset_z=props.output_offset_z,
+        )
+        apply_delaunay_if_requested(obj, props.output_geometry, self.report)
+        self.report({'INFO'}, f"Created {len(points)} grid vertices")
+        return {'FINISHED'}
+
+
+class DPI_OT_vertex_reflow(Operator):
+    bl_idname = "dpi.vertex_reflow"
+    bl_label = "Vertex Reflow"
+    bl_description = "Align selected vertices along a straight line or an external curve"
+
+    mode: EnumProperty(
+        name="Mode",
+        items=[
+            ('LINEAR', "Linear", "Align vertices along a straight line"),
+            ('FOLLOW_CURVE', "Follow Curve", "Align vertices along the selected curve object"),
+        ],
+        default='LINEAR',
+        options={'HIDDEN'},
+    )
+
+    def _get_selected_vertices(self, obj):
+        is_edit_mode = (obj.mode == 'EDIT')
+        if is_edit_mode:
+            bm = bmesh.from_edit_mesh(obj.data)
+            selected = [v for v in bm.verts if v.select]
+        else:
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            bm.verts.ensure_lookup_table()
+            selected = [v for v in bm.verts if v.select]
+        return bm, selected, is_edit_mode
+
+    def _finish_bmesh(self, obj, bm, is_edit_mode):
+        if is_edit_mode:
+            bmesh.update_edit_mesh(obj.data)
+        else:
+            bm.to_mesh(obj.data)
+            obj.data.update()
+            bm.free()
+
+    def _linear_targets(self, coords: List[Vector]) -> Optional[List[Vector]]:
+        pair = _farthest_pair(coords)
+        if not pair:
+            return None
+        start, end = pair
+        count = len(coords)
+        return _sample_line_points(start, end, count)
+
+    def _curve_targets(self, context, obj, count: int, curve_obj) -> Optional[List[Vector]]:
+        if count <= 0 or not curve_obj or curve_obj.type != 'CURVE':
+            return None
+        depsgraph = context.evaluated_depsgraph_get()
+        world_points = _ordered_polyline_from_curve(curve_obj, depsgraph)
+        if len(world_points) < 2:
+            return None
+        obj_inv = obj.matrix_world.inverted()
+        local_points = [obj_inv @ pt for pt in world_points]
+        return _sample_along_polyline(local_points, count)
+
+    def execute(self, context):
+        props = context.scene.dpi_props
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Active mesh object required")
+            return {'CANCELLED'}
+
+        bm, selected, is_edit_mode = self._get_selected_vertices(obj)
+        try:
+            if len(selected) < 2:
+                self.report({'WARNING'}, "Select at least two vertices")
+                return {'CANCELLED'}
+
+            coords = [vert.co.copy() for vert in selected]
+            ordered_indices = _sorted_indices_by_axis(coords)
+            ordered_verts = [selected[i] for i in ordered_indices]
+            ordered_coords = [coords[i] for i in ordered_indices]
+
+            if self.mode == 'FOLLOW_CURVE':
+                curve_obj = props.reflow_curve_object
+                targets = self._curve_targets(context, obj, len(ordered_coords), curve_obj)
+                if not targets:
+                    self.report({'ERROR'}, "Valid curve object with evaluable path required")
+                    return {'CANCELLED'}
+                mode_label = "follow curve"
+            else:
+                targets = self._linear_targets(ordered_coords)
+                if not targets:
+                    self.report({'ERROR'}, "Failed to compute linear endpoints")
+                    return {'CANCELLED'}
+                mode_label = "linear"
+
+            moved = 0
+            for vert, target in zip(ordered_verts, targets):
+                vert.co = target
+                moved += 1
+
+            self._finish_bmesh(obj, bm, is_edit_mode)
+        finally:
+            if not is_edit_mode and bm.is_valid:
+                bm.free()
+
+        self.report({'INFO'}, f"Vertex Reflow applied ({mode_label}, {moved} verts)")
+        return {'FINISHED'}
+
+
 class DPI_OT_create_proxy_drone(Operator):
     bl_idname = "dpi.create_proxy_drone"
     bl_label = "Create Proxy Drone GN"
@@ -1414,6 +1702,20 @@ class DPI_PT_panel(Panel):
                 info += f" ({p.custom_region_object_name})"
             box4.label(text=f"Region: {info}")
 
+        box4.separator()
+        box4.label(text="Vertex Reflow")
+        row = box4.row(align=True)
+        op_linear = row.operator(DPI_OT_vertex_reflow.bl_idname, text="Linear", icon='ALIGN_CENTER')
+        op_linear.mode = 'LINEAR'
+        op_curve = row.operator(DPI_OT_vertex_reflow.bl_idname, text="Follow Curve", icon='CURVE_DATA')
+        op_curve.mode = 'FOLLOW_CURVE'
+        box4.prop(p, "reflow_curve_object")
+
+        box4.separator()
+        box4.label(text="Grid Generator")
+        box4.prop(p, "grid_vertex_count")
+        box4.operator(DPI_OT_create_grid_vertices.bl_idname, icon='MESH_GRID')
+
         box_proxy = layout.box()
         box_proxy.label(text="Proxy Drone")
         active_obj = context.view_layer.objects.active
@@ -1470,6 +1772,8 @@ classes = (
     DPI_OT_path_to_dots,
     DPI_OT_load_custom_region,
     DPI_OT_randomize_selected_vertices,
+    DPI_OT_create_grid_vertices,
+    DPI_OT_vertex_reflow,
     DPI_OT_create_proxy_drone,
     DPI_OT_run_delaunay,
     DPI_PT_panel,
