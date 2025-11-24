@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Dot Points Importer (CSV + Vertices)",
     "author": "ABEYUYA",
-    "version": (1, 3, 3),
+    "version": (1, 3, 4),
     "blender": (4, 3, 0),
     "location": "View3D > N-panel > Dot Importer",
     "description": "Detect circular black dots from an image, export centers to CSV, and create vertices at those positions.",
@@ -755,6 +755,22 @@ class DPIProps(PropertyGroup):
         description="Gaussian blur radius for line conversion",
         default=0.5, min=0.0,
     )
+    line_sampling_mode: EnumProperty(
+        name="Line Sampling",
+        description="ライン抽出の手法を切り替えます",
+        items=[
+            ('PATH', "Path", "スケルトンからパスを生成して等間隔にサンプリング"),
+            ('GRID', "Grid", "Vertex Spacing サイズのグリッドで黒密度を評価"),
+        ],
+        default='PATH',
+    )
+    line_grid_threshold: FloatProperty(
+        name="Grid Black Ratio",
+        description="グリッドセルを点として採用するために必要な黒の割合",
+        default=0.4,
+        min=0.0,
+        max=1.0,
+    )
     thresh_scale: FloatProperty(
         name="Thresh Scale",
         description="Threshold scale for line conversion",
@@ -1004,6 +1020,56 @@ class DPI_OT_detect_and_create(Operator):
 
     def execute(self, context):
         p = context.scene.dpi_props
+
+        curves = [obj for obj in context.selected_objects if obj.type == 'CURVE']
+        if not curves:
+            active = context.active_object
+            if active and active.type == 'CURVE':
+                curves = [active]
+
+        if curves:
+            spacing = compute_geometry_spacing(p)
+            total_created = 0
+            created_objects = []
+            for curve in curves:
+                points = _curve_points_with_fill(curve, spacing, p.fill_closed, p.fill_mode)
+                if not points:
+                    continue
+                pts = np.unique(np.round(np.array(points, dtype=float), 6), axis=0)
+                effective_limit = p.max_points
+                if p.auto_adjust_max_points and p.max_points > 0 and len(pts) > p.max_points:
+                    effective_limit = len(pts)
+                main_pts, extra_pts = _split_points_for_limit(pts, effective_limit)
+
+                base_name = f"{p.object_name or 'CurveDots'}_{curve.name}"
+                if len(main_pts) > 0:
+                    obj = create_points_object(
+                        base_name,
+                        main_pts,
+                        p.collection_name,
+                        rotation_x=p.output_rotation_x,
+                        offset_z=p.output_offset_z,
+                    )
+                    apply_delaunay_if_requested(obj, p.output_geometry, self.report)
+                    total_created += len(main_pts)
+                    created_objects.append(obj.name)
+                if len(extra_pts) > 0:
+                    create_points_object(
+                        base_name + "_Extras",
+                        extra_pts,
+                        p.collection_name,
+                        rotation_x=p.output_rotation_x,
+                        offset_z=p.output_offset_z,
+                    )
+
+            if total_created == 0:
+                self.report({'WARNING'}, "No points generated from the selected curves")
+                return {'CANCELLED'}
+
+            info = ", ".join(created_objects)
+            self.report({'INFO'}, f"Created {total_created} vertices from curves ({info})")
+            return {'FINISHED'}
+
         if not p.image_path:
             self.report({'ERROR'}, "Image not set")
             return {'CANCELLED'}
@@ -1038,6 +1104,8 @@ class DPI_OT_detect_and_create(Operator):
                 blur_radius=p.blur_radius,
                 thresh_scale=p.thresh_scale,
                 junction_ratio=p.junction_ratio,
+                sampling_mode=p.line_sampling_mode,
+                grid_threshold=p.line_grid_threshold,
                 max_points=sampling_limit,
                 resize_to=p.resize_to,
             )
@@ -1062,6 +1130,8 @@ class DPI_OT_detect_and_create(Operator):
                 blur_radius=p.blur_radius,
                 thresh_scale=p.thresh_scale,
                 junction_ratio=p.junction_ratio,
+                sampling_mode=p.line_sampling_mode,
+                grid_threshold=p.line_grid_threshold,
                 max_points=sampling_limit,
                 resize_to=p.resize_to,
                 detect_color_boundary=p.detect_color_boundary,
@@ -1857,6 +1927,9 @@ class DPI_PT_panel(Panel):
             box.prop(p, "blur_radius")
             box.prop(p, "thresh_scale")
             box.prop(p, "junction_ratio")
+            box.prop(p, "line_sampling_mode")
+            if p.line_sampling_mode == 'GRID':
+                box.prop(p, "line_grid_threshold")
         if p.conversion_mode == 'MIX':
             box.prop(p, "mix_thickness")
         box.prop(p, "resize_to")
@@ -1869,7 +1942,6 @@ class DPI_PT_panel(Panel):
         box2.prop(p, "output_rotation_x")
         box2.prop(p, "output_offset_z")
         box2.prop(p, "output_geometry")
-        box2.operator(DPI_OT_run_delaunay.bl_idname, icon='MESH_GRID')
         box2.prop(p, "vertex_spacing")
         box2.prop(p, "origin_mode")
         box2.prop(p, "flip_y")
@@ -1889,6 +1961,7 @@ class DPI_PT_panel(Panel):
 
         box4 = layout.box()
         box4.label(text="ManualPlacement")
+        box4.operator(DPI_OT_run_delaunay.bl_idname, icon='MESH_GRID')
         box4.prop(p, "placement_mode")
         box4.prop(p, "ignore_unselected_spacing")
         box4.prop(p, "randomize_use_mesh_region")
