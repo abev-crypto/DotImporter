@@ -17,6 +17,8 @@ def mixed_image_to_dots(
     blur_radius: float = 0.5,
     thresh_scale: float = 0.8,
     junction_ratio: float = 0.35,
+    sampling_mode: str = "PATH",
+    grid_threshold: float = 0.4,
     max_points: int = 0,
     resize_to: int = 0,
     detect_color_boundary: bool = False,
@@ -84,6 +86,8 @@ def mixed_image_to_dots(
         blur_radius=blur_radius,
         thresh_scale=thresh_scale,
         junction_ratio=junction_ratio,
+        sampling_mode=sampling_mode,
+        grid_threshold=grid_threshold,
         max_points=max_points,
         resize_to=resize_to,
     )
