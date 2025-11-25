@@ -28,7 +28,7 @@ def ensure_random_axis_offset_group(name="GN_RandomAxisOffset_PerVertex"):
         socket_type="NodeSocketVector",
         description="Axis direction for offset",
     )
-    s_axis.default_value = (0.0, 0.0, 1.0)  # デフォルト Z 方向
+    s_axis.default_value = (0.0, 1.0, 0.0)  # デフォルト Z 方向
 
     # 入力: Min Offset (m)
     s_min = iface.new_socket(
@@ -39,7 +39,7 @@ def ensure_random_axis_offset_group(name="GN_RandomAxisOffset_PerVertex"):
     )
     s_min.min_value = -1e6
     s_min.max_value = 1e6
-    s_min.default_value = -0.1
+    s_min.default_value = -0.25
 
     # 入力: Max Offset (m)
     s_max = iface.new_socket(
@@ -50,7 +50,7 @@ def ensure_random_axis_offset_group(name="GN_RandomAxisOffset_PerVertex"):
     )
     s_max.min_value = -1e6
     s_max.max_value = 1e6
-    s_max.default_value = 0.1
+    s_max.default_value = 0.25
 
     # 入力: Seed
     s_seed = iface.new_socket(
