@@ -1821,11 +1821,17 @@ class DPI_OT_setup_follow_curve(Operator):
 class DPI_OT_create_proxy_drone(Operator):
     bl_idname = "dpi.create_proxy_drone"
     bl_label = "Create Proxy Drone GN"
-    bl_description = "Apply or update the Proxy Drone geometry nodes on every Dot Importer mesh"
+    bl_description = (
+        "Apply or update the Proxy Drone geometry nodes on selected Dot Importer meshes "
+        "(or all if none are selected)"
+    )
 
     def execute(self, context):
         props = context.scene.dpi_props
-        targets = [obj for obj in iter_dot_importer_meshes()]
+        selected_targets = [
+            obj for obj in context.selected_objects if is_dot_importer_object(obj)
+        ]
+        targets = selected_targets or [obj for obj in iter_dot_importer_meshes()]
         if not targets:
             self.report({'WARNING'}, "Dot Importer 生成メッシュが見つかりません")
             return {'CANCELLED'}
