@@ -47,7 +47,7 @@ from Convert.ProxyDrone import (
     set_proxy_modifier_flags,
 )
 from Convert.random_offset_gn import ensure_random_axis_offset_group
-from Convert.Delaunay import delaunay_from_vertices
+from Convert.Delaunay import delaunay_from_points, delaunay_from_vertices
 from Convert.reflow_vertex import (
     MESH_OT_reflow_vertices,
     MESH_OT_repel_from_neighbors,
@@ -1902,6 +1902,30 @@ class DPI_OT_run_delaunay(Operator):
         return {'FINISHED'}
 
 
+class DPI_OT_run_delaunay_from_origins(Operator):
+    bl_idname = "dpi.run_delaunay_from_origins"
+    bl_label = "Run Delaunay (Origins)"
+    bl_description = "選択オブジェクトの原点を点として Delaunay 三角形メッシュを生成します"
+
+    def execute(self, context):
+        selected = list(context.selected_objects)
+        if len(selected) < 3:
+            self.report({'ERROR'}, "オブジェクトを3つ以上選択してください")
+            return {'CANCELLED'}
+
+        points = [obj.matrix_world.translation.copy() for obj in selected]
+        base_name = context.view_layer.objects.active.name if context.view_layer.objects.active else "origins"
+
+        new_obj, error = delaunay_from_points(points, name=base_name)
+        if error:
+            self.report({'WARNING'}, error)
+            return {'CANCELLED'}
+
+        mark_dot_importer_object(new_obj)
+        self.report({'INFO'}, f"Delaunay メッシュ '{new_obj.name}' を作成しました")
+        return {'FINISHED'}
+
+
 class DPI_OT_apply_random_offset_gn(Operator):
     bl_idname = "dpi.apply_random_offset_gn"
     bl_label = "Random Offset GN"
@@ -1991,6 +2015,7 @@ class DPI_PT_panel(Panel):
         box4 = layout.box()
         box4.label(text="ManualPlacement")
         box4.operator(DPI_OT_run_delaunay.bl_idname, icon='MESH_GRID')
+        box4.operator(DPI_OT_run_delaunay_from_origins.bl_idname, icon='EMPTY_AXIS')
         box4.prop(p, "placement_mode")
         box4.prop(p, "ignore_unselected_spacing")
         box4.prop(p, "randomize_use_mesh_region")
@@ -2131,6 +2156,7 @@ classes = (
     DPI_OT_create_proxy_drone,
     DPI_OT_remove_proxy_drone,
     DPI_OT_run_delaunay,
+    DPI_OT_run_delaunay_from_origins,
     DPI_OT_apply_random_offset_gn,
     DPI_PT_panel,
     DPI_PT_mesh_panel,
