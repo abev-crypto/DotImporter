@@ -46,6 +46,7 @@ from Convert.ProxyDrone import (
     NODE_GROUP_NAME as PROXY_NODE_GROUP_NAME,
     set_proxy_modifier_flags,
 )
+from Convert.random_offset_gn import ensure_random_axis_offset_group
 from Convert.Delaunay import delaunay_from_vertices
 from Convert.reflow_vertex import (
     MESH_OT_reflow_vertices,
@@ -1901,6 +1902,28 @@ class DPI_OT_run_delaunay(Operator):
         return {'FINISHED'}
 
 
+class DPI_OT_apply_random_offset_gn(Operator):
+    bl_idname = "dpi.apply_random_offset_gn"
+    bl_label = "Random Offset GN"
+    bl_description = "選択中のメッシュにランダム軸オフセットのジオメトリーノードを追加します"
+
+    def execute(self, context):
+        node_group = ensure_random_axis_offset_group()
+        targets = [obj for obj in context.selected_objects if obj.type == 'MESH']
+        if not targets:
+            self.report({'WARNING'}, "メッシュオブジェクトを選択してください")
+            return {'CANCELLED'}
+
+        added = 0
+        for obj in targets:
+            mod = obj.modifiers.new(name="RandomAxisOffset", type='NODES')
+            mod.node_group = node_group
+            added += 1
+
+        self.report({'INFO'}, f"{added} object(s) updated")
+        return {'FINISHED'}
+
+
 # ---------- UI Panel ----------
 class DPI_PT_panel(Panel):
     bl_label = "Dot Importer"
@@ -2034,6 +2057,10 @@ class DPI_PT_panel(Panel):
         box4.prop(p, "grid_vertex_count")
         box4.operator(DPI_OT_create_grid_vertices.bl_idname, icon='MESH_GRID')
 
+        box4.separator()
+        box4.label(text="Random Offset GN")
+        box4.operator(DPI_OT_apply_random_offset_gn.bl_idname, icon='MOD_NOISE')
+
         box_proxy = layout.box()
         box_proxy.label(text="Proxy Drone")
         active_obj = context.view_layer.objects.active
@@ -2104,6 +2131,7 @@ classes = (
     DPI_OT_create_proxy_drone,
     DPI_OT_remove_proxy_drone,
     DPI_OT_run_delaunay,
+    DPI_OT_apply_random_offset_gn,
     DPI_PT_panel,
     DPI_PT_mesh_panel,
     DPI_PT_path_panel,
