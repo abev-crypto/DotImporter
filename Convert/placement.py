@@ -333,6 +333,53 @@ def _linspace(min_val: float, max_val: float, count: int) -> List[float]:
     return [min_val + step * i for i in range(count)]
 
 
+def _point_in_polygon_result(pt: Vector, polygon: Sequence[Vector]) -> int:
+    """Return 1 for inside, 0 for boundary, -1 for outside."""
+    if hasattr(mu_geometry, "point_in_polygon_2d"):
+        try:
+            return mu_geometry.point_in_polygon_2d(pt.x, pt.y, polygon, False)
+        except Exception:
+            pass
+    return _point_in_polygon_fallback(pt.x, pt.y, polygon)
+
+
+def _point_in_polygon_fallback(x: float, y: float, polygon: Sequence[Vector]) -> int:
+    # Simple ray casting fallback for Blender versions without point_in_polygon_2d.
+    n = len(polygon)
+    if n < 3:
+        return -1
+
+    inside = False
+    eps = 1e-9
+
+    for i in range(n):
+        p1 = polygon[i]
+        p2 = polygon[(i + 1) % n]
+        x1 = float(p1.x)
+        y1 = float(p1.y)
+        x2 = float(p2.x)
+        y2 = float(p2.y)
+        dx = x2 - x1
+        dy = y2 - y1
+
+        cross = (x - x1) * dy - (y - y1) * dx
+        if abs(cross) <= eps:
+            if (
+                min(x1, x2) - eps <= x <= max(x1, x2) + eps
+                and min(y1, y2) - eps <= y <= max(y1, y2) + eps
+            ):
+                return 0
+
+        if (y1 > y) != (y2 > y):
+            x_int = x1 + (y - y1) * dx / dy if abs(dy) > eps else x1
+            if abs(x_int - x) <= eps:
+                return 0
+            if x_int > x:
+                inside = not inside
+
+    return 1 if inside else -1
+
+
 def _points_in_polygon_filter(
     candidates: Sequence[Vector],
     polygon: Sequence[Vector],
@@ -341,10 +388,30 @@ def _points_in_polygon_filter(
         return list(candidates)
     filtered: List[Vector] = []
     for pt in candidates:
-        res = mu_geometry.point_in_polygon_2d(pt.x, pt.y, polygon, False)
+        res = _point_in_polygon_result(pt, polygon)
         if res >= 0:
             filtered.append(pt)
     return filtered
+
+
+_GRID_RANDOM_ATTEMPTS = 64
+
+
+def _random_candidate_in_polygon(
+    co: Vector,
+    polygon: Sequence[Vector],
+    spacing: float,
+    static_tree,
+    new_positions: Sequence[Vector],
+) -> Optional[Vector]:
+    for _ in range(_GRID_RANDOM_ATTEMPTS):
+        sample = sample_point_in_polygon(polygon)
+        if sample is None:
+            break
+        candidate = Vector((sample.x, sample.y, co.z))
+        if _candidate_valid(candidate, spacing, static_tree, new_positions):
+            return candidate
+    return None
 
 
 def grid_assignments(
@@ -369,7 +436,8 @@ def grid_assignments(
         for x in xs:
             candidates.append(Vector((x, y, 0.0)))
 
-    candidates = _points_in_polygon_filter(candidates, region.polygon or [])
+    polygon = region.polygon or []
+    candidates = _points_in_polygon_filter(candidates, polygon)
 
     assignments: List[Optional[Vector]] = []
     new_positions: List[Vector] = []
@@ -386,6 +454,11 @@ def grid_assignments(
                 new_positions.append(candidate)
                 assigned = candidate
                 break
+        if assigned is None and polygon:
+            candidate = _random_candidate_in_polygon(co, polygon, spacing, static_tree, new_positions)
+            if candidate is not None:
+                new_positions.append(candidate)
+                assigned = candidate
         if assigned is None:
             skipped += 1
         assignments.append(assigned)

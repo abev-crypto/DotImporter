@@ -88,6 +88,36 @@ def _get_socket(collection, *, name=None, index=0):
     return None
 
 
+def _create_torus_geometry(nodes, links, *, torus_radius, torus_minor_radius, major_segments, minor_segments):
+    """Return a torus mesh node, falling back to curve setup if the primitive is unavailable."""
+    try:
+        torus_node = nodes.new("GeometryNodeMeshTorus")
+    except RuntimeError:
+        path_circle = nodes.new("GeometryNodeCurvePrimitiveCircle")
+        path_circle.location = (-1100, 420)
+        path_circle.inputs["Radius"].default_value = torus_radius
+        path_circle.inputs["Resolution"].default_value = int(major_segments)
+
+        profile_circle = nodes.new("GeometryNodeCurvePrimitiveCircle")
+        profile_circle.location = (-1100, 240)
+        profile_circle.inputs["Radius"].default_value = torus_minor_radius
+        profile_circle.inputs["Resolution"].default_value = int(minor_segments)
+
+        curve_to_mesh = nodes.new("GeometryNodeCurveToMesh")
+        curve_to_mesh.location = (-900, 420)
+
+        links.new(path_circle.outputs["Curve"], curve_to_mesh.inputs["Curve"])
+        links.new(profile_circle.outputs["Curve"], curve_to_mesh.inputs["Profile Curve"])
+        return curve_to_mesh
+
+    torus_node.location = (-900, 420)
+    torus_node.inputs["Major Radius"].default_value = torus_radius
+    torus_node.inputs["Minor Radius"].default_value = torus_minor_radius
+    torus_node.inputs["Major Segments"].default_value = major_segments
+    torus_node.inputs["Minor Segments"].default_value = minor_segments
+    return torus_node
+
+
 def _build_node_group(
     ng,
     *,
@@ -195,12 +225,16 @@ def _build_node_group(
     uv_sphere.inputs["Segments"].default_value = 24
     uv_sphere.inputs["Rings"].default_value = 12
 
-    mesh_torus = nodes.new("GeometryNodeMeshTorus")
-    mesh_torus.location = (-900, 420)
-    mesh_torus.inputs["Major Radius"].default_value = torus_radius
-    mesh_torus.inputs["Minor Radius"].default_value = torus_minor_radius
-    mesh_torus.inputs["Major Segments"].default_value = 64
-    mesh_torus.inputs["Minor Segments"].default_value = 32
+    torus_major_segments = 64
+    torus_minor_segments = 32
+    mesh_torus = _create_torus_geometry(
+        nodes,
+        links,
+        torus_radius=torus_radius,
+        torus_minor_radius=torus_minor_radius,
+        major_segments=torus_major_segments,
+        minor_segments=torus_minor_segments,
+    )
 
     mesh_line = nodes.new("GeometryNodeMeshLine")
     mesh_line.location = (-1100, 420)
@@ -260,7 +294,9 @@ def _build_node_group(
 
     links.new(store_attr.outputs["Geometry"], inst_on_points.inputs["Points"])
 
-    links.new(mesh_torus.outputs["Mesh"], torus_switch.inputs["True"])
+    torus_mesh_socket = _get_socket(mesh_torus.outputs, name="Mesh")
+    if torus_mesh_socket:
+        links.new(torus_mesh_socket, torus_switch.inputs["True"])
     links.new(mesh_line.outputs["Mesh"], torus_switch.inputs["False"])
     links.new(group_in.outputs[torus_index], torus_switch.inputs["Switch"])
 
@@ -295,9 +331,6 @@ def create_gn_sphere_proximity(
 ):
     """アクティブオブジェクトにGN_SphereProximityモディファイアを作成/適用"""
 
-    if obj is None or obj.type != 'MESH':
-        raise TypeError("メッシュオブジェクトに対してのみ使用できます")
-
     mat_default = get_or_create_emission_material(
         "Mat_Default", (1.0, 1.0, 1.0), emission_strength
     )
@@ -319,17 +352,8 @@ def create_gn_sphere_proximity(
         torus_minor_radius=torus_minor_radius,
     )
 
-    modifier = None
-    for mod in obj.modifiers:
-        if mod.type == 'NODES' and mod.node_group == ng:
-            modifier = mod
-            break
-        if mod.type == 'NODES' and mod.name == group_name:
-            modifier = mod
-            break
-
-    if modifier is None:
-        modifier = obj.modifiers.new(name=group_name, type='NODES')
+    modifier = obj.modifiers.new(name=group_name, type='NODES')
+        
 
     modifier.node_group = ng
 

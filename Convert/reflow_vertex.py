@@ -105,6 +105,22 @@ def catmull_rom(p0, p1, p2, p3, t):
              ( -1.5*t3 + 2.0*t2 + 0.5*t) * p2 +
              (  0.5*t3 - 0.5*t2      ) * p3 )
 
+def smooth_polyline(points, iterations=6, factor=0.55):
+    """Iteratively relax interior points toward the midpoint of neighbors."""
+    if len(points) < 3 or iterations <= 0:
+        return points[:]
+    pts = [p.copy() for p in points]
+    for _ in range(iterations):
+        new_pts = [pts[0]]
+        for i in range(1, len(pts) - 1):
+            left = pts[i - 1]
+            right = pts[i + 1]
+            target = (left + right) * 0.5
+            new_pts.append(pts[i].lerp(target, factor))
+        new_pts.append(pts[-1])
+        pts = new_pts
+    return pts
+
 def polyline_resample(points, count):
     # 弧長等間隔で count 個にサンプリング
     import math

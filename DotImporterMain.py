@@ -1840,19 +1840,13 @@ class DPI_OT_create_proxy_drone(Operator):
         applied = 0
         errors = 0
         for obj in targets:
-            if obj.data is None or len(obj.data.vertices) == 0:
-                continue
-            try:
-                modifier = create_gn_sphere_proximity(
+            modifier = create_gn_sphere_proximity(
                     obj,
                     enable_distance_check=props.proxy_enable_distance_check,
                     enable_torus=props.proxy_enable_torus_mesh,
                 )
-                if modifier:
+            if modifier:
                     applied += 1
-            except Exception as exc:
-                errors += 1
-                self.report({'WARNING'}, f"{obj.name}: {exc}")
 
         if applied == 0:
             self.report({'ERROR'}, "Proxy Drone GN を適用できませんでした")
