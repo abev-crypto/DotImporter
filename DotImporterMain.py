@@ -26,7 +26,7 @@ import csv
 import json
 import numpy as np
 from PIL import Image, ImageDraw
-from mathutils import Vector
+from mathutils import Vector, kdtree
 from math import radians
 from typing import List, Optional
 
@@ -51,8 +51,15 @@ from Convert.Delaunay import delaunay_from_points, delaunay_from_vertices
 from Convert.reflow_vertex import (
     MESH_OT_reflow_vertices,
     MESH_OT_repel_from_neighbors,
+    endpoints_edge_path,
+    endpoints_farthest,
+    order_by_edge_path,
+    order_by_projection,
+    project_axis_limit,
+    smooth_polyline,
 )
 from Convert.follow_curve import setup_modifier_for_selection as follow_curve_setup
+from Convert.wave_gn import create_wave_gn
 
 
 DOT_IMPORTER_TAG = "_dot_importer_generated"
@@ -999,6 +1006,25 @@ class DPIProps(PropertyGroup):
         default=10,
         min=1,
     )
+    smooth_iterations: IntProperty(
+        name="Smooth Iterations",
+        description="滑らかにする繰り返し回数",
+        default=6,
+        min=1,
+    )
+    smooth_factor: FloatProperty(
+        name="Smooth Factor",
+        description="隣接頂点の中点へ近付ける割合",
+        default=0.55,
+        min=0.0,
+        max=1.0,
+    )
+    smooth_axis_limit: EnumProperty(
+        name="Smooth Axis Limit",
+        description="スムーズ移動の制限軸",
+        items=AXIS_LIMIT_ITEMS,
+        default='XY',
+    )
     repel_iterations: IntProperty(
         name="Repel Iterations",
         description="Repel From Neighbors を繰り返す回数",
@@ -1008,6 +1034,24 @@ class DPIProps(PropertyGroup):
     repel_axis_limit: EnumProperty(
         name="Repel Axis Limit",
         description="Repel From Neighbors の移動軸制限",
+        items=AXIS_LIMIT_ITEMS,
+        default='XY',
+    )
+    nudge_min_distance: FloatProperty(
+        name="Nudge Min Distance",
+        description="頂点間の最低距離。Vertex Spacing が設定されている場合はそちらを優先",
+        default=0.1,
+        min=0.0,
+    )
+    nudge_iterations: IntProperty(
+        name="Nudge Iterations",
+        description="頂点を押し広げる繰り返し回数",
+        default=10,
+        min=1,
+    )
+    nudge_axis_limit: EnumProperty(
+        name="Nudge Axis Limit",
+        description="頂点を押し広げる際の移動制限軸",
         items=AXIS_LIMIT_ITEMS,
         default='XY',
     )
@@ -1712,6 +1756,9 @@ class DPI_OT_vertex_reflow(Operator):
         options={'HIDDEN'},
     )
 
+    def invoke(self, context, event):
+        return self.execute(context)
+
     def _get_selected_vertices(self, obj):
         is_edit_mode = (obj.mode == 'EDIT')
         if is_edit_mode:
@@ -1794,6 +1841,159 @@ class DPI_OT_vertex_reflow(Operator):
                 bm.free()
 
         self.report({'INFO'}, f"Vertex Reflow applied ({mode_label}, {moved} verts)")
+        return {'FINISHED'}
+
+
+class DPI_OT_smooth_polyline(Operator):
+    bl_idname = "dpi.smooth_polyline"
+    bl_label = "Smooth Polyline"
+    bl_description = "Smooth selected vertices along their polyline order"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    iterations: IntProperty(name="Iterations", default=6, min=1)
+    factor: FloatProperty(name="Factor", default=0.55, min=0.0, max=1.0)
+    axis_limit: EnumProperty(name="Axis Limit", items=AXIS_LIMIT_ITEMS, default='XY')
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        return obj is not None and obj.type == 'MESH'
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj.mode != 'EDIT':
+            self.report({'ERROR'}, "Edit Mode で頂点を選択してください")
+            return {'CANCELLED'}
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        selected = [v for v in bm.verts if v.select]
+        if len(selected) < 3:
+            self.report({'WARNING'}, "3頂点以上を選択してください")
+            return {'CANCELLED'}
+
+        endpoints = endpoints_edge_path(selected) or endpoints_farthest(selected)
+        order = order_by_edge_path(selected, *endpoints)
+        if order is None:
+            order = order_by_projection(selected, *endpoints)
+
+        points = [selected[i].co.copy() for i in order]
+        smoothed = smooth_polyline(points, iterations=self.iterations, factor=self.factor)
+
+        for idx, vid in enumerate(order):
+            v = selected[vid]
+            delta = project_axis_limit(smoothed[idx] - v.co, self.axis_limit)
+            v.co += delta
+
+        bmesh.update_edit_mesh(obj.data)
+        self.report({'INFO'}, f"Smoothed {len(selected)} vertices")
+        return {'FINISHED'}
+
+
+class DPI_OT_nudge_vertices(Operator):
+    bl_idname = "dpi.nudge_vertices"
+    bl_label = "Nudge Vertices"
+    bl_description = "Push selected vertices apart to respect a minimum distance"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    min_distance: FloatProperty(name="Min Distance", default=0.1, min=0.0)
+    iterations: IntProperty(name="Iterations", default=10, min=1)
+    axis_limit: EnumProperty(name="Axis Limit", items=AXIS_LIMIT_ITEMS, default='XY')
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "active_object", None)
+        return obj is not None and obj.type == 'MESH'
+
+    def _get_bmesh(self, obj):
+        if obj.mode == 'EDIT':
+            return bmesh.from_edit_mesh(obj.data), True
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        return bm, False
+
+    def _finish(self, obj, bm, is_edit_mode):
+        if is_edit_mode:
+            bmesh.update_edit_mesh(obj.data)
+        else:
+            bm.to_mesh(obj.data)
+            obj.data.update()
+            bm.free()
+
+    def execute(self, context):
+        obj = context.active_object
+        bm, is_edit_mode = self._get_bmesh(obj)
+        try:
+            selected = [v for v in bm.verts if v.select]
+            if not selected:
+                self.report({'WARNING'}, "頂点を選択してください")
+                return {'CANCELLED'}
+
+            min_dist = max(self.min_distance, 0.0)
+            props = getattr(context.scene, "dpi_props", None)
+            if props is not None:
+                spacing = max(float(getattr(props, "vertex_spacing", 0.0)), 0.0)
+                if spacing > 0.0:
+                    min_dist = spacing
+
+            min_dist_sq = min_dist * min_dist
+            for _ in range(self.iterations):
+                kd = kdtree.KDTree(len(selected))
+                for i, vert in enumerate(selected):
+                    kd.insert(vert.co, i)
+                kd.balance()
+
+                moves = [Vector((0.0, 0.0, 0.0)) for _ in selected]
+                for i, v1 in enumerate(selected):
+                    for co2, j, dist in kd.find_range(v1.co, min_dist):
+                        if j <= i or dist < 1e-12:
+                            continue
+                        if dist * dist < min_dist_sq:
+                            direction = (v1.co - co2).normalized()
+                            push = (min_dist - dist) * 0.5
+                            moves[i] += direction * push
+                            moves[j] -= direction * push
+
+                for vert, move in zip(selected, moves):
+                    vert.co += project_axis_limit(move, self.axis_limit)
+
+            self._finish(obj, bm, is_edit_mode)
+        finally:
+            if not is_edit_mode and bm.is_valid:
+                bm.free()
+
+        self.report({'INFO'}, f"Nudged {len(selected)} vertices")
+        return {'FINISHED'}
+
+
+class DPI_OT_add_wave_gn(Operator):
+    bl_idname = "dpi.add_wave_gn"
+    bl_label = "Add Wave GN"
+    bl_description = "Assign the Wave geometry node group to the active mesh"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Active mesh object required")
+            return {'CANCELLED'}
+
+        try:
+            node_group = create_wave_gn()
+        except Exception as exc:  # pragma: no cover - Blender specific
+            self.report({'ERROR'}, f"Wave GN を作成できません: {exc}")
+            return {'CANCELLED'}
+
+        modifier = None
+        for mod in obj.modifiers:
+            if mod.type == 'NODES' and mod.node_group and mod.node_group.name == node_group.name:
+                modifier = mod
+                break
+        if modifier is None:
+            modifier = obj.modifiers.new(name="VertexWaveXYZ", type='NODES')
+        modifier.node_group = node_group
+
+        self.report({'INFO'}, f"Wave GN を {obj.name} に適用しました")
         return {'FINISHED'}
 
 
@@ -2043,6 +2243,9 @@ class DPI_PT_panel(Panel):
             col_adv.prop(p, "reflow_repulsion_min_distance")
             col_adv.prop(p, "reflow_repulsion_iterations")
         col_adv.prop(p, "reflow_axis_limit")
+        col_adv.prop(p, "smooth_iterations")
+        col_adv.prop(p, "smooth_factor")
+        col_adv.prop(p, "smooth_axis_limit")
         row = box4.row(align=True)
         op_reflow = row.operator(
             MESH_OT_reflow_vertices.bl_idname,
@@ -2054,6 +2257,15 @@ class DPI_PT_panel(Panel):
         op_reflow.axis_limit = p.reflow_axis_limit
         op_reflow.min_distance = p.reflow_repulsion_min_distance
         op_reflow.iterations = p.reflow_repulsion_iterations
+
+        op_smooth = col_adv.operator(
+            DPI_OT_smooth_polyline.bl_idname,
+            text="Smooth Polyline",
+            icon='SMOOTHCURVE',
+        )
+        op_smooth.iterations = p.smooth_iterations
+        op_smooth.factor = p.smooth_factor
+        op_smooth.axis_limit = p.smooth_axis_limit
 
         box4.label(text="Repel From Neighbors")
         repel_dist = max(p.vertex_spacing, 0.0)
@@ -2072,6 +2284,20 @@ class DPI_PT_panel(Panel):
         box4.operator(DPI_OT_setup_follow_curve.bl_idname, icon='CURVE_PATH')
 
         box4.separator()
+        box4.label(text="Nudge Vertices")
+        box4.prop(p, "nudge_min_distance")
+        box4.prop(p, "nudge_iterations")
+        box4.prop(p, "nudge_axis_limit")
+        op_nudge = box4.operator(
+            DPI_OT_nudge_vertices.bl_idname,
+            text="Nudge",
+            icon='FORCE_WIND',
+        )
+        op_nudge.min_distance = p.nudge_min_distance
+        op_nudge.iterations = p.nudge_iterations
+        op_nudge.axis_limit = p.nudge_axis_limit
+
+        box4.separator()
         box4.label(text="Grid Generator")
         box4.prop(p, "grid_vertex_count")
         box4.operator(DPI_OT_create_grid_vertices.bl_idname, icon='MESH_GRID')
@@ -2079,6 +2305,10 @@ class DPI_PT_panel(Panel):
         box4.separator()
         box4.label(text="Random Offset GN")
         box4.operator(DPI_OT_apply_random_offset_gn.bl_idname, icon='MOD_NOISE')
+
+        box4.separator()
+        box4.label(text="Wave GN")
+        box4.operator(DPI_OT_add_wave_gn.bl_idname, icon='MOD_WAVE')
 
         box_proxy = layout.box()
         box_proxy.label(text="Proxy Drone")
@@ -2144,6 +2374,9 @@ classes = (
     DPI_OT_randomize_selected_vertices,
     DPI_OT_create_grid_vertices,
     DPI_OT_vertex_reflow,
+    DPI_OT_smooth_polyline,
+    DPI_OT_nudge_vertices,
+    DPI_OT_add_wave_gn,
     DPI_OT_setup_follow_curve,
     MESH_OT_reflow_vertices,
     MESH_OT_repel_from_neighbors,
