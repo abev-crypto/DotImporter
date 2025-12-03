@@ -148,7 +148,6 @@ def polyline_resample(points, count):
 class MESH_OT_reflow_vertices(bpy.types.Operator):
     bl_idname = "mesh.reflow_vertices"
     bl_label = "Reflow Vertices"
-    bl_options = {'REGISTER', 'UNDO'}
 
     flow_mode: bpy.props.EnumProperty(
         name="Flow",
@@ -178,18 +177,6 @@ class MESH_OT_reflow_vertices(bpy.types.Operator):
         items=[("XYZ","XYZ",""),("XY","XY",""),("XZ","XZ",""),("YZ","YZ",""),("X","X",""),("Y","Y",""),("Z","Z","")],
         default="XY"
     )
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "flow_mode")
-        layout.prop(self, "endpoint_mode")
-        if self.flow_mode == "REPULSION":
-            layout.prop(self, "min_distance")
-            layout.prop(self, "iterations")
-        layout.prop(self, "axis_limit")
-
-    def invoke(self, context, event):
-        return self.execute(context)
 
     def execute(self, context):
         obj = context.object
@@ -271,7 +258,6 @@ class MESH_OT_reflow_vertices(bpy.types.Operator):
 class MESH_OT_repel_from_neighbors(bpy.types.Operator):
     bl_idname = "mesh.repel_from_neighbors"
     bl_label = "Repel From Neighbors"
-    bl_options = {"REGISTER", "UNDO"}
     bl_description = (
         "Move selected vertices away from surrounding vertices to ensure"
         " a minimum proximity distance"
@@ -297,15 +283,6 @@ class MESH_OT_repel_from_neighbors(bpy.types.Operator):
     def poll(cls, context):
         obj = getattr(context, "object", None)
         return obj is not None and obj.type == 'MESH'
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "min_distance")
-        layout.prop(self, "iterations")
-        layout.prop(self, "axis_limit")
-
-    def invoke(self, context, event):
-        return self.execute(context)
 
     def execute(self, context):
         obj = context.object
