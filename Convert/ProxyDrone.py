@@ -246,8 +246,6 @@ def _build_node_group(
 
     join_instances = nodes.new("GeometryNodeJoinGeometry")
     join_instances.location = (-500, 300)
-    while len(join_instances.inputs) < 2:
-        join_instances.inputs.new('NodeSocketGeometry', "Geometry")
 
     inst_on_points = nodes.new("GeometryNodeInstanceOnPoints")
     inst_on_points.location = (-200, 200)
@@ -300,8 +298,10 @@ def _build_node_group(
     links.new(mesh_line.outputs["Mesh"], torus_switch.inputs["False"])
     links.new(group_in.outputs[torus_index], torus_switch.inputs["Switch"])
 
-    links.new(uv_sphere.outputs["Mesh"], join_instances.inputs[0])
-    links.new(torus_switch.outputs["Output"], join_instances.inputs[1])
+    join_input = _get_socket(join_instances.inputs, index=0)
+    if join_input:
+        links.new(uv_sphere.outputs["Mesh"], join_input)
+        links.new(torus_switch.outputs["Output"], join_input)
     links.new(join_instances.outputs["Geometry"], inst_on_points.inputs["Instance"])
     links.new(inst_on_points.outputs["Instances"], realize.inputs["Geometry"])
 
