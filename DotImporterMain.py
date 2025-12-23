@@ -2030,7 +2030,7 @@ class DPI_OT_create_proxy_drone(Operator):
     def execute(self, context):
         props = context.scene.dpi_props
         selected_targets = [
-            obj for obj in context.selected_objects if is_dot_importer_object(obj)
+            obj for obj in context.selected_objects
         ]
         targets = selected_targets or [obj for obj in iter_dot_importer_meshes()]
         if not targets:
